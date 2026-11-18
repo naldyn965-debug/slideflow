@@ -86,7 +86,8 @@ export async function openPreview(ctx, t, { onChange } = {}) {
       c.minPt != null ? h('p', { class: 'muted' }, `Text sizes: ${c.minPt === c.maxPt ? c.minPt : `${c.minPt} to ${c.maxPt}`} pt`) : null,
       c.contrast?.status === 'low' ? h('p', { class: 'muted' }, h('span', { class: 'inl' }, 'Low contrast: ', swatch(c.contrast.text), `#${c.contrast.text} on `, swatch(c.contrast.background), `#${c.contrast.background} (${c.contrast.ratio}:1)`)) : null,
       c.contrast?.status === 'not-evaluated' ? h('p', { class: 'muted' }, 'Contrast not evaluated: the text sits on a picture or gradient.') : null,
-      c.bleed?.length ? h('p', { class: 'muted' }, `Shapes run off the ${c.bleed.join(', ')} edge; they are ignored for margins.`) : null,
+      c.bleed?.length ? h('p', { class: 'muted' }, `Decorative bleed: pictures or shapes reach the ${c.bleed.join(', ')} edge on purpose; they are ignored for margins.`) : null,
+      c.overflow?.length ? h('p', { class: 'muted' }, `Content runs past the slide edge: ${c.overflow.map((o) => `${o.kind === 'text' ? 'text' : o.kind}${o.outside ? ' entirely outside the slide' : ` past the ${o.edges.join(', ')} edge${o.byPct ? ` by ${o.byPct}%` : ''}`}`).join('; ')}.`) : null,
     ];
   }
 

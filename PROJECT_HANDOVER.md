@@ -1,8 +1,8 @@
-# SlideFlow handover (Phase 1 + Phase 2 + Phase 2.1)
+# SlideFlow handover (Phase 1 + Phase 2 + Phase 2.1 + Phase 2.2)
 
 ## Status
 
-Phases 1 and 2 were verified in headless Chromium (Local mode, strict CSP): 92 e2e checks (42 Phase 1, 50 Phase 2). Phase 2.1 (precision fixes, below) was built in a sandbox without Chromium: its 55 browser-free analysis checks pass (`npm run test:analysis`), the e2e file was edited (design version 2, 4 new checks) but **has not been re-run**; run `npm test` once.
+Phases 1 and 2 were verified in headless Chromium (Local mode, strict CSP): 92 e2e checks (42 Phase 1, 50 Phase 2). Phase 2.1 (precision fixes, below) was built in a sandbox without Chromium: its 55 browser-free analysis checks pass (`npm run test:analysis`), its e2e checks were not run then. Phase 2.2 (below) was verified end to end: `npm test` 98/98 in headless Chromium and 96 analysis checks (the analysis suite was run through Chromium's DOMParser because jsdom could not be installed in that sandbox; run `npm run test:analysis` once with jsdom).
 **Not verified**: live Firebase (auth, Firestore, Storage), the security rules in the emulator, the CSP against live Firebase endpoints, real-world PowerPoint/Keynote/Google Slides files. See `TESTING.md` for the manual list. Treat the Firebase path as written-to-spec but untested until that list is done.
 
 ## Architecture
@@ -58,6 +58,30 @@ Diagnostics: each slide record carries `colorMap` (`master`/`layout`/`slide`), `
 Known limits kept honest: the real template was not available, so the fixes were driven by a synthetic deck that reproduces each symptom (`tests/make_fixture_p21.py`); if the real file still misbehaves, its design JSON now says why. Bleed detection treats any non-text shape crossing an edge, and any picture touching an edge, as decoration. Text over a picture is never judged for contrast. Slide-level `masterClrMapping` is treated as "inherit from the layout".
 
 Tuning knobs worth knowing: thresholds in `classify()` and `buildModes()`; `DESIGN_VERSION` (bump to force re-analysis of all stored templates on next preview).
+
+## Phase 2.2: slide types and geometry (design version 3)
+
+All in `design.js` (plus two UI wording lines in `design-panel.js` / `preview.js`). `DESIGN_VERSION` is 3, so stored analyses refresh on the next preview. Every earlier field is kept; new fields are optional.
+
+**Classification**
+| Before | Now |
+|---|---|
+| Any two side-by-side text blocks = comparison | Two columns are a layout choice. Comparison needs its layout (`twoTxTwoObj` / name "compar...", high), wording in the title (high) or in a short label such as "vs" (medium), or mirrored columns that each have their own short heading (`mirrored()`, medium). Running prose ("compared with last year") is not wording. Plain two-column text stays `text`, and its reasons say so |
+| Picture coverage >= 30% = image, or >= 15% with <= 60 words | Only *content* pictures count (`pictureRole()`): backgrounds, logos/icons (< 3% of the slide), thin bands/rails (< 12% thick) and pictures repeated at the same place on >= 30% of slides (template artwork) are decorative. Image needs light supporting text: coverage >= 30% with <= 30 body words, a picture layout with <= 40, a gallery of 3+ with <= 40, or >= 15% with a caption <= 15. A picture beside a paragraph stays `text` (medium confidence when the picture competes) |
+
+New slide fields: `imageRoles {background, content, decorative}`; `contentImageCoverage` now counts content pictures only (`imageCoverage` still counts all).
+
+**Geometry** (root causes of "everything is bleed")
+| Cause | Fix |
+|---|---|
+| Shape rotation was never read: a vertical rule or side label built from a rotated horizontal shape was measured unrotated, so it appeared to cross the edge | `rotOf()` / `rotatedBox()` apply a shape's own rotation to its bounds (group rotation is still ignored) |
+| Tables, charts and diagrams past the edge were labelled bleed, hidden from margins and never flagged | They stay `content`; past the edge they are overflow |
+| A text frame overshooting by less than its own inset was flagged off-slide | Text is judged by frame minus insets |
+| Empty placeholders were treated as decoration | New role `empty` (not drawn when presenting): neither bleed nor overflow |
+| No evidence of intent, so a bar or band repeated on every template slide read as a problem | `bleed` = decorative, intentional (reported, not a problem). `bleedDetail` lists `{kind, edges, mode flush|beyond, byPct, repeats}`; `repeats` = number of slides carrying the same shape at the same place |
+
+Overflow is `offSlide` + `overflow [{kind text|table|chart|object, edges, byPct, outside?, sample?}]`, summarised by `spacing.offSlideSlides` and a new `content-overflow` finding. Decorative bleed is `bleed` / `bleedDetail` / `spacing.bleedSlides`. Not yet seen: the real template. If every slide still reports bleed, check `bleedDetail`: a `repeats` equal to the slide count means a template element, which is correct.
+Tests: `tests/make_fixture_p22.py` (4 fixtures), 41 new analysis checks, 2 e2e checks.
 
 ## Data model
 

@@ -4,7 +4,8 @@
 import { kid, kids, desc, readXml, readRels, xfrmOf, intoGroup, placeholderOf, normType } from './parser.js';
 
 // v2 (Phase 2.1): colour-map overrides, per-shape backdrops for contrast, bleed-aware margins, background-aware classification.
-export const DESIGN_VERSION = 2;
+// v3 (Phase 2.2): rotation-aware geometry, decorative bleed vs content overflow, text-density/picture-role/structure-aware slide types.
+export const DESIGN_VERSION = 3;
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const FOOTER = new Set(['dt', 'ftr', 'sldNum']);
 const DEFAULT_CLRMAP = { bg1: 'lt1', tx1: 'dk1', bg2: 'lt2', tx2: 'dk2' };
@@ -157,6 +158,19 @@ async function loadLayout(zip, path, env) {
 }
 
 const xfrmOf0 = (el) => (el ? xfrmOf(el) : null);
+/** `rot` of a shape's own <a:xfrm>, in degrees. Rotation of a parent group is not read (see limitations). */
+function rotOf(el) {
+  const holder = el.localName === 'graphicFrame' ? el : kid(el, 'spPr');
+  return (Number(kid(holder, 'xfrm')?.getAttribute('rot')) || 0) / 60000;
+}
+/** Axis-aligned bounds of a box rotated about its centre. A vertical rule stored as a rotated horizontal one lies where it is drawn, not where its unrotated frame is. */
+const isRotated = (deg) => { const a = ((deg % 180) + 180) % 180; return a >= 0.5 && a <= 179.5; };
+function rotatedBox(b, deg) {
+  if (!isRotated(deg)) return b;
+  const t = (((deg % 180) + 180) % 180 * Math.PI) / 180; const c = Math.abs(Math.cos(t)); const s = Math.abs(Math.sin(t));
+  const w = b.w * c + b.h * s; const h = b.w * s + b.h * c;
+  return { ...b, x: b.x + b.w / 2 - w / 2, y: b.y + b.h / 2 - h / 2, w, h };
+}
 function phShape(ph, doc) {
   if (!doc || !ph) return null;
   for (const sp of desc(doc, 'sp')) {
@@ -237,7 +251,8 @@ function recordOf(el, n, toSlide, env) {
   const lay = ph && phShape(ph, env.layoutDoc);
   const mas = ph && phShape(ph, env.master?.doc);
   const own = xfrmOf(el);
-  const rec = { kind: 'shape', ph: ph ? normType(ph.type) : null, phRaw: ph?.type || null, box: own ? toSlide(own) : xfrmOf0(lay) || xfrmOf0(mas), fill: null, geom: null, text: '', words: 0, runs: [], image: null };
+  const rot = own ? rotOf(el) : 0;
+  const rec = { kind: 'shape', ph: ph ? normType(ph.type) : null, phRaw: ph?.type || null, box: own ? toSlide(rotatedBox(own, rot)) : xfrmOf0(lay) || xfrmOf0(mas), rotated: isRotated(rot), fill: null, geom: null, text: '', words: 0, runs: [], image: null };
   const spPr = kid(el, 'spPr');
   if (n === 'sp') {
     rec.geom = kid(spPr, 'prstGeom')?.getAttribute('prst') || (kid(spPr, 'custGeom') ? 'custom' : null);
@@ -278,28 +293,43 @@ function decorOf(doc, env) {
 const pctBox = (b, W, H) => ({ x: r1((b.x / W) * 100), y: r1((b.y / H) * 100), w: r1((b.w / W) * 100), h: r1((b.h / H) * 100) });
 
 // ---------- geometry roles and backdrops (Phase 2.1) ----------
-const EDGE = 0.005; // within 0.5% of the slide edge counts as touching it
+const EDGE = 0.005; // within 0.5% of the slide edge counts as touching it; overshooting by less than this is rounding, not a decision
+const DEFAULT_INSET = { l: 91440, t: 45720, r: 91440, b: 45720 }; // PowerPoint's text insets (EMU) where a text box sets none
+const DATA = new Set(['table', 'chart', 'object']);
+const EDGES = ['left', 'right', 'top', 'bottom'];
 /**
- * What a shape is for, so that decoration never distorts margins or slide classes:
+ * What a shape is for, so that decoration never distorts margins and real overflow is never hidden as decoration (Phase 2.2).
+ *   footer      date / footer / slide-number placeholders
+ *   empty       a placeholder nobody filled: it is not drawn when presenting, so it is neither decoration nor content
+ *   content     everything the reader is meant to read: text, tables, charts, diagrams, and pictures/shapes inside the slide.
+ *               When content runs past an edge it is overflow (`edges`, `by`): text is judged by the area its words occupy
+ *               (frame minus insets: a frame that overshoots by less than its inset clips nothing), data objects by their frame
  *   background  non-text picture/panel covering (almost) the whole slide
- *   bleed       non-text shape running off the slide (any shape) or a picture touching an edge: intentional, not a margin
- *   content     everything the reader is meant to see (text always counts, with its box clipped to the slide)
- *   footer / offslide
- * Also records which edges a bleed shape reaches (`edges`).
+ *   bleed       decoration that is intentionally flush with or beyond an edge: any non-text, non-data shape crossing it, or a
+ *               picture touching it. Not a margin, not a problem. `by` = how far past the edge (fraction of the slide)
+ *   offslide    entirely outside the slide
+ * Boxes are rotation-aware (see rotatedBox), so a vertical rule stored as a rotated horizontal one is not mistaken for an off-slide shape.
  */
 function roleOf(sh, W, H) {
   const b = sh.box;
-  if (!b) return { role: null, edges: [] };
-  if (FOOTER.has(sh.phRaw)) return { role: 'footer', edges: [] };
+  if (!b) return { role: null, edges: [], by: 0 };
+  if (FOOTER.has(sh.phRaw)) return { role: 'footer', edges: [], by: 0 };
   const x0 = Math.max(0, b.x); const y0 = Math.max(0, b.y); const x1 = Math.min(W, b.x + b.w); const y1 = Math.min(H, b.y + b.h);
-  if (x1 <= x0 || y1 <= y0) return { role: 'offslide', edges: [] };
-  const crosses = { left: b.x < -EDGE * W, right: b.x + b.w > W * (1 + EDGE), top: b.y < -EDGE * H, bottom: b.y + b.h > H * (1 + EDGE) };
+  if (x1 <= x0 || y1 <= y0) return { role: 'offslide', edges: [], by: 0 };
+  const text = sh.words > 0;
+  if (sh.phRaw && !text && sh.kind === 'shape' && (!sh.fill || sh.fill.type === 'none')) return { role: 'empty', edges: [], by: 0 };
+  // Area that must stay inside the slide: the text area for text, the frame for everything else.
+  const ins = text && !sh.rotated ? { ...DEFAULT_INSET, ...sh.insets } : { l: 0, t: 0, r: 0, b: 0 };
+  const r = { x: b.x + ins.l, y: b.y + ins.t, w: Math.max(0, b.w - ins.l - ins.r), h: Math.max(0, b.h - ins.t - ins.b) };
+  const past = { left: -r.x / W, right: (r.x + r.w - W) / W, top: -r.y / H, bottom: (r.y + r.h - H) / H }; // > 0 = beyond that edge
+  const crosses = Object.fromEntries(EDGES.map((k) => [k, past[k] > EDGE]));
+  const reach = (edges) => Math.max(0, ...edges.map((k) => past[k]));
+  if (text || DATA.has(sh.kind)) { const edges = EDGES.filter((k) => crosses[k]); return { role: 'content', edges, by: reach(edges), text }; }
+  if ((x1 - x0) >= 0.95 * W && (y1 - y0) >= 0.95 * H) return { role: 'background', edges: [], by: 0 };
   const touches = { left: b.x <= EDGE * W, right: b.x + b.w >= W * (1 - EDGE), top: b.y <= EDGE * H, bottom: b.y + b.h >= H * (1 - EDGE) };
   const pic = sh.kind === 'image' || sh.fill?.type === 'image';
-  if (sh.words > 0) return { role: 'content', edges: Object.keys(crosses).filter((k) => crosses[k]), text: true };
-  if ((x1 - x0) >= 0.95 * W && (y1 - y0) >= 0.95 * H) return { role: 'background', edges: [] };
-  const edges = Object.keys(crosses).filter((k) => crosses[k] || (pic && touches[k]));
-  return { role: edges.length ? 'bleed' : 'content', edges };
+  const edges = EDGES.filter((k) => crosses[k] || (pic && touches[k]));
+  return { role: edges.length ? 'bleed' : 'content', edges, by: reach(edges) };
 }
 
 /** Raw shape records of a master or layout under the colour map of the slide being analysed (cached per map). */
@@ -356,6 +386,7 @@ const KW_TITLE_NAME = /\b(title slide|cover|front page)\b/i;
 const KW_CLOSE_NAME = /\b(thank|closing|end slide|the end|contact|q\s*&\s*a|goodbye)\b/i;
 const TWO_COL_TYPES = ['twoObj', 'twoColTx', 'twoObjAndObj', 'twoObjAndTx', 'txAndTwoObj'];
 const IMG_TYPES = ['picTx', 'txAndClipArt', 'clipArtAndTx', 'txAndMedia', 'mediaAndTx'];
+const KW_IMG_NAME = /\b(pictures?|photos?|images?|gallery)\b/i;
 
 const isTitle = (s) => s.ph === 'title' || s.titleLike;
 /** Slides built from plain text boxes have no title placeholder: treat the top, strictly-largest text box as the title. */
@@ -371,13 +402,63 @@ function inferTitle(shapes, H) {
   return true;
 }
 
-function features(shapes, bg, layout, W, H) {
+/** A picture's identity for "repeats across the deck": same media at the same place (20 x 20 grid). */
+const picKey = (s, W, H) => `${s.image.target}|${Math.round((s.box.x / W) * 20)},${Math.round((s.box.y / H) * 20)},${Math.round((s.box.w / W) * 20)},${Math.round((s.box.h / H) * 20)}`;
+/** Pictures that sit at the same place on at least 30% of the slides (and 2+): logos, bands and artwork of the template, not slide content. */
+function recurringPictures(S, W, H) {
+  const n = S.length; const count = new Map();
+  if (n < 3) return new Set();
+  for (const s of S) {
+    const keys = new Set(s.shapes.filter((x) => x.kind === 'image' && x.image?.target && x.box).map((x) => picKey(x, W, H)));
+    keys.forEach((k) => bump(count, k));
+  }
+  const min = Math.max(2, Math.ceil(n * 0.3));
+  return new Set([...count].filter(([, c]) => c >= min).map(([k]) => k));
+}
+/**
+ * Role of a picture that is not the slide background. `decorative`: artwork repeated across the deck, a logo or icon (under 3% of the
+ * slide), or a thin band or rail along an edge (under 12% thick, over half the slide long). Everything else is `content`.
+ * Only content pictures can make a slide picture-led.
+ */
+function pictureRole(s, W, H, deco) {
+  if (!s.box) return 'content';
+  const w = Math.min(W, s.box.x + s.box.w) - Math.max(0, s.box.x); const h = Math.min(H, s.box.y + s.box.h) - Math.max(0, s.box.y);
+  if (s.image?.target && deco.has(picKey(s, W, H))) return 'decorative';
+  if ((w * h) / (W * H) < 0.03) return 'decorative';
+  if ((h <= 0.12 * H && w >= 0.5 * W) || (w <= 0.12 * W && h >= 0.5 * H)) return 'decorative';
+  return 'content';
+}
+/**
+ * Blocks that mirror each other, each with its own short heading directly above (Build | Buy, Before | After, Starter | Pro):
+ * the shape of a comparison, as opposed to one text flowed into two columns. Needs 2 to 4 side-by-side blocks of similar width,
+ * similar length and the same top, with headings on one line.
+ */
+function mirrored(blocks, W, H) {
+  const headed = [];
+  for (const c of blocks) {
+    if (!c.box || c.words < 3 || c.box.w > 0.65 * W) continue;
+    const hd = blocks.find((h) => h !== c && h.box && h.words >= 1 && h.words <= 6 && h.words < c.words
+      && Math.min(h.box.x + h.box.w, c.box.x + c.box.w) - Math.max(h.box.x, c.box.x) >= 0.6 * Math.min(h.box.w, c.box.w)
+      && h.box.y + h.box.h <= c.box.y + 0.02 * H && c.box.y - (h.box.y + h.box.h) <= 0.15 * H);
+    if (hd) headed.push({ c, hd });
+  }
+  if (headed.length < 2 || headed.length > 4) return false;
+  if (new Set(headed.map((x) => Math.round(x.c.box.x / (0.05 * W)))).size !== headed.length) return false; // genuinely side by side
+  const within = (v, tol) => Math.max(...v) <= tol * Math.min(...v);
+  const level = (v) => Math.max(...v) - Math.min(...v) <= 0.06 * H;
+  return within(headed.map((x) => x.c.box.w), 1.5) && within(headed.map((x) => x.c.words), 2.5) && level(headed.map((x) => x.c.box.y)) && level(headed.map((x) => x.hd.box.y));
+}
+
+function features(shapes, bg, layout, W, H, deco = new Set()) {
   const A = W * H;
   const clipA = (s) => { if (!s.box) return 0; const w = Math.min(W, s.box.x + s.box.w) - Math.max(0, s.box.x); const h = Math.min(H, s.box.y + s.box.h) - Math.max(0, s.box.y); return w > 0 && h > 0 ? w * h : 0; };
   // A picture covering the whole slide is the slide's background, not image content: it must not turn a cover, text or closing slide into an "image" slide.
+  // Of the rest, logos, icons, bands and template artwork are decoration; only the remaining pictures are content (see pictureRole).
   const pics = shapes.filter((s) => s.kind === 'image' && s.layoutRole !== 'offslide');
   const backdrops = pics.filter((s) => s.layoutRole === 'background');
-  const contentPics = pics.filter((s) => s.layoutRole !== 'background');
+  const rest = pics.filter((s) => s.layoutRole !== 'background');
+  const decorPics = rest.filter((s) => pictureRole(s, W, H, deco) === 'decorative');
+  const contentPics = rest.filter((s) => !decorPics.includes(s));
   const body = shapes.filter((s) => s.kind === 'text' && !FOOTER.has(s.phRaw));
   const blocks = body.filter((s) => !isTitle(s));
   const area = (s) => (s.box ? Math.min(A, Math.max(0, s.box.w) * Math.max(0, s.box.h)) : 0);
@@ -390,10 +471,12 @@ function features(shapes, bg, layout, W, H) {
   cols.forEach((a, i) => cols.slice(i + 1).forEach((b) => { if (side(a.box, b.box)) { inCols.add(a); inCols.add(b); } }));
   const text = body.map((s) => s.text).join(' ');
   const title = body.find(isTitle)?.text || '';
+  const L = layout?.type || null; const N = layout?.name || '';
+  const words = body.reduce((n, s) => n + s.words, 0);
   return {
-    layoutType: layout?.type || null, layoutName: layout?.name || '',
-    words: body.reduce((n, s) => n + s.words, 0), textBlocks: blocks.length,
-    images: pics.length, contentImages: contentPics.length,
+    layoutType: L, layoutName: N,
+    words, bodyWords: blocks.reduce((n, s) => n + s.words, 0), textBlocks: blocks.length,
+    images: pics.length, contentImages: contentPics.length, decorImages: decorPics.length,
     imageCoverage: Math.min(1, pics.reduce((n, s) => n + clipA(s), 0) / A),
     contentCoverage: Math.min(1, contentPics.reduce((n, s) => n + clipA(s), 0) / A),
     backdropImage: bg?.type === 'image' || backdrops.length > 0,
@@ -401,7 +484,11 @@ function features(shapes, bg, layout, W, H) {
     tables: shapes.filter((s) => s.kind === 'table').length, charts: shapes.filter((s) => s.kind === 'chart').length,
     chartArea: Math.min(1, shapes.filter((s) => s.kind === 'chart' || s.kind === 'table').reduce((n, s) => n + area(s), 0) / A),
     hasCtrTitle: shapes.some((s) => s.phRaw === 'ctrTitle'), hasTitle: shapes.some(isTitle), hasBody: shapes.some((s) => s.ph === 'body'),
-    columns: inCols.size, closingKw: KW_CLOSE.test(text), compareKw: KW_COMPARE.test(title) || KW_COMPARE.test(text.slice(0, 200)),
+    columns: inCols.size, parallel: mirrored(blocks, W, H),
+    picLayout: IMG_TYPES.includes(L) || KW_IMG_NAME.test(N), twoColLayout: TWO_COL_TYPES.includes(L), compareLayout: L === 'twoTxTwoObj' || /compar/i.test(N),
+    closingKw: KW_CLOSE.test(text),
+    // Wording counts in the title or in a short label ("vs", "Before / After"), never in running prose ("compared with last year").
+    compareTitleKw: KW_COMPARE.test(title), compareKw: KW_COMPARE.test(title) || blocks.some((s) => s.words <= 8 && KW_COMPARE.test(s.text)),
   };
 }
 function classify(f, i, n, cover) {
@@ -426,14 +513,31 @@ function classify(f, i, n, cover) {
   if (i > 0 && (L === 'secHead' || /section|divider|chapter/i.test(N))) return out('section', L === 'secHead' ? 'high' : 'medium', L === 'secHead' ? 'section-header layout' : `layout name "${N}"`);
   if (i > 0 && i < n - 1 && f.hasTitle && f.words <= 10 && f.textBlocks <= 1 && f.contentImages === 0)
     return out('section', 'medium', `title with only ${f.words} words and no content pictures`, onPic);
-  if (f.columns >= 2) {
-    const strong = f.compareKw || L === 'twoTxTwoObj' || /compar/i.test(N);
-    return out('comparison', strong ? 'high' : 'medium', `${f.columns} side-by-side text blocks`, strong ? 'comparison wording or layout' : 'two-column text without comparison wording');
+  // Two columns are a layout choice, not a comparison. A comparison needs evidence beyond the columns: its layout, comparison
+  // wording (in the title or a short label), or mirrored columns that each have their own heading. Otherwise it is text.
+  const twoCol = f.columns >= 2;
+  if (twoCol || (f.compareLayout && f.textBlocks >= 2)) {
+    const sides = twoCol ? `${f.columns} side-by-side text blocks` : null;
+    if (f.compareLayout || f.compareTitleKw) return out('comparison', 'high', f.compareLayout ? 'comparison layout' : 'comparison wording in the title', sides);
+    if (f.parallel || f.compareKw) return out('comparison', 'medium', f.parallel ? 'mirrored columns, each led by its own short heading' : 'comparison wording in a short label next to side-by-side text', sides);
   }
-  if (f.contentCoverage >= 0.3) return out('image', f.contentCoverage >= 0.5 ? 'high' : 'medium', `pictures cover ${pc(f.contentCoverage)} of the slide`);
+  // Picture-led: the pictures are the content and any text only supports them. Coverage never decides alone; text density,
+  // the picture's role (decorative pictures and backgrounds do not count) and the layout do. A picture beside a paragraph is an illustrated text slide.
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  if (f.contentImages >= 1) {
+    const support = `${plural(f.bodyWords, 'word')} of supporting text`;
+    if (f.contentCoverage >= 0.3 && f.bodyWords <= 30) return out('image', (f.contentCoverage >= 0.5 && f.bodyWords <= 15) || f.picLayout ? 'high' : 'medium', `pictures cover ${pc(f.contentCoverage)} of the slide`, support, f.picLayout ? 'picture layout' : null);
+    if (f.picLayout && f.bodyWords <= 40) return out('image', 'medium', 'picture layout', support);
+    if (f.contentImages >= 3 && f.contentCoverage >= 0.2 && f.bodyWords <= 40) return out('image', 'medium', `${f.contentImages} pictures covering ${pc(f.contentCoverage)} of the slide (gallery)`, support);
+    if (f.contentCoverage >= 0.15 && f.bodyWords <= 15) return out('image', 'medium', `picture covering ${pc(f.contentCoverage)} of the slide with a short caption`, support);
+  }
   if (f.backdropImage && f.words <= 15) return out('image', f.words === 0 ? 'high' : 'medium', f.words === 0 ? 'full-slide picture with no text' : `full-slide picture with little text (${f.words} words)`);
-  if (f.contentImages >= 1 && ((f.contentCoverage >= 0.15 && f.words <= 60) || IMG_TYPES.includes(L))) return out('image', 'medium', `picture-led layout, ${f.words} words`);
-  if (f.words >= 1) return out('text', f.hasBody ? 'high' : 'medium', `${f.words} words`, f.hasBody ? 'body placeholder' : 'free text boxes', onPic);
+  if (f.words >= 1) {
+    const competing = f.contentCoverage >= 0.3;
+    return out('text', f.hasBody && !competing ? 'high' : 'medium', `${f.words} words`, f.hasBody ? 'body placeholder' : 'free text boxes',
+      twoCol || f.twoColLayout ? 'two-column text: columns alone do not make a comparison' : null,
+      f.contentImages ? `${plural(f.contentImages, 'picture')} (${pc(f.contentCoverage)} of the slide) alongside ${plural(f.bodyWords, 'word')} of text, so the text leads` : null, onPic);
+  }
   return out('other', 'low', 'no readable text, pictures, tables or charts');
 }
 
@@ -474,7 +578,7 @@ export async function extractDesign(parsed) {
     const shapes = [];
     walkTree(desc(doc, 'spTree')[0], (b) => b, e, shapes);
     if (inferTitle(shapes, H)) env.stats.inferredTitles++;
-    for (const sh of shapes) { const r = roleOf(sh, W, H); sh.layoutRole = r.role; sh.edges = r.edges; }
+    for (const sh of shapes) { const r = roleOf(sh, W, H); sh.layoutRole = r.role; sh.edges = r.edges; sh.by = r.by; }
     const effBg = bgHex(bg) || (bg.type === 'none' && cx.theme.colors[cx.clrMap.bg1]) || null;
     // Shapes drawn beneath the slide's own shapes: master, then layout (unless hidden).
     const under = [];
@@ -483,10 +587,12 @@ export async function extractDesign(parsed) {
       if (layout) under.push(...layerRecs(layout, env, cx).filter((r) => !r.ph));
     }
     shapes.forEach((sh, k) => { if (sh.runs.length) sh.backdrop = backdropOf(sh, [...under, ...shapes.slice(0, k)], { hex: effBg, type: bg.type }); });
-    const f = features(shapes, bg, layout, W, H);
-    S.push({ i, ps, shapes, bg, effBg, f, cls: null, cx, layout, colorMap });
+    S.push({ i, ps, shapes, bg, effBg, f: null, cls: null, cx, layout, colorMap });
   }
-  // Classify once every slide's features are known, so the last slide can be compared with the cover.
+  // Features need the whole deck (a picture repeated at the same place on many slides is template artwork), and classification
+  // needs every slide's features (the last slide is compared with the cover), so both run after the per-slide pass.
+  const deco = recurringPictures(S, W, H);
+  for (const s of S) s.f = features(s.shapes, s.bg, s.layout, W, H, deco);
   for (const s of S) s.cls = classify(s.f, s.i, S.length, S[0]?.f);
   return assemble(parsed, env, S);
 }
@@ -505,7 +611,8 @@ function assemble(parsed, env, S) {
   if (theme.missing) limitations.push('No theme part was found, so theme colours and fonts are unavailable and scheme-based colours could not be resolved.');
   if (env.stats.unappliedMods.size) limitations.push(`Colour transforms not applied: ${[...env.stats.unappliedMods].join(', ')}. Affected colours may be approximate.`);
   if (env.stats.inferredTitles) limitations.push(`${env.stats.inferredTitles} slide(s) have no title placeholder; the top, largest text box was treated as the title.`);
-  limitations.push('Group rotation and flips are ignored when positioning shapes.');
+  limitations.push('Rotation of a single shape is applied to its bounds; rotation and flips of groups are ignored when positioning shapes.');
+  limitations.push('Decorative bleed (pictures and shapes flush with or past an edge) is told apart from content overflow by shape type and position only; text is judged by its frame minus insets, so text that wraps beyond its frame is not detected.');
 
   // typography, palette, alignment, shapes
   const fonts = new Map(); const sizes = new Map(); const roles = {}; const pal = new Map();
@@ -521,8 +628,14 @@ function assemble(parsed, env, S) {
     }
     // Margins describe the content frame only: pictures and panels that bleed off the slide, and full-slide backgrounds, are decoration.
     const content = s.shapes.filter((x) => x.layoutRole === 'content' && ['text', 'image', 'table', 'chart', 'object'].includes(x.kind) && !(x.box.w >= 0.9 * W && x.box.h >= 0.9 * H));
-    const bleed = [...new Set(s.shapes.filter((x) => x.layoutRole === 'bleed').flatMap((x) => x.edges))];
-    const offSlide = s.shapes.some((x) => x.layoutRole === 'offslide' && x.words > 0 || (x.layoutRole === 'content' && x.words > 0 && x.edges.length));
+    // Decorative bleed is intentional (reported, never a problem); overflow is content (text, table, chart, diagram) that runs past
+    // the slide edge or sits entirely outside it. The two are reported separately.
+    const bleedShapes = s.shapes.filter((x) => x.layoutRole === 'bleed');
+    const bleed = [...new Set(bleedShapes.flatMap((x) => x.edges))];
+    const bleedDetail = bleedShapes.slice(0, 4).map((x) => ({ kind: x.kind === 'image' ? 'picture' : 'shape', edges: x.edges, mode: x.by > EDGE ? 'beyond' : 'flush', byPct: r1(x.by * 100), box: x.box }));
+    const overflow = s.shapes.filter((x) => (x.words > 0 || DATA.has(x.kind)) && (x.layoutRole === 'offslide' || (x.layoutRole === 'content' && x.edges.length)))
+      .map((x) => ({ kind: x.kind, edges: x.edges, byPct: r1(x.by * 100), outside: x.layoutRole === 'offslide' || undefined, sample: x.words ? x.text.slice(0, 30) : undefined }));
+    const offSlide = overflow.length > 0;
     let checked = 0; let unchecked = 0;
     let minPt = null; let maxPt = null; let titleSz = null; let smallChars = 0; let worst = null; let shapeCount = {};
     for (const sh of s.shapes) {
@@ -572,7 +685,7 @@ function assemble(parsed, env, S) {
       const ov = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
       if (ov >= 0.5 * Math.min(a.w, b.w) && b.y >= a.y + a.h) gaps.push(((b.y - a.y - a.h) / H) * 100);
     }
-    Object.assign(s, { bounds, minPt, maxPt, titleSz, smallChars, worst, gaps, shapeCount, content, bleed, offSlide, checked, unchecked });
+    Object.assign(s, { bounds, minPt, maxPt, titleSz, smallChars, worst, gaps, shapeCount, content, bleed, bleedDetail, overflow: overflow.slice(0, 4), offSlide, checked, unchecked });
   }
 
   // palette
@@ -618,6 +731,11 @@ function assemble(parsed, env, S) {
 
   // patterns and recurring elements
   const bin = (b) => `${Math.round((b.x / W) * 20)},${Math.round((b.y / H) * 20)},${Math.round((b.w / W) * 20)},${Math.round((b.h / H) * 20)}`;
+  // Decorative bleed that sits at the same place on several slides is a template element (bar, band, glow): it is why many slides share a bleed flag.
+  const bleedSig = (x) => `${x.kind}|${x.edges.join()}|${bin(x.box)}`;
+  const bleedSeen = new Map();
+  for (const s of S) new Set(s.bleedDetail.map(bleedSig)).forEach((k) => bump(bleedSeen, k));
+  for (const s of S) for (const x of s.bleedDetail) { const c = bleedSeen.get(bleedSig(x)); if (c >= 2) x.repeats = c; delete x.box; }
   const sigs = new Map(); const recur = new Map();
   for (const s of S) {
     const sig = `${s.layout?.name || '-'}|` + s.shapes.filter((x) => x.box && ['text', 'image', 'table', 'chart'].includes(x.kind)).map((x) => `${x.kind}${x.ph || ''}@${bin(x.box)}`).sort().join(';');
@@ -645,7 +763,8 @@ function assemble(parsed, env, S) {
     classes[s.cls.class]++; conf[s.cls.confidence]++;
     slideRecs.push({ n: s.i + 1, title: s.ps.title, layout: s.layout?.name || null, layoutType: s.layout?.type || null, class: s.cls.class, confidence: s.cls.confidence, reasons: s.cls.reasons,
       background: { type: s.bg.type, hex: s.bg.hex || s.effBg || null, source: s.bg.source, picture: s.f.backdropImage || undefined }, words: s.f.words, counts: s.shapeCount,
-      imageCoverage: r2(s.f.imageCoverage), contentImageCoverage: r2(s.f.contentCoverage), bounds: s.bounds, bleed: s.bleed.length ? s.bleed : undefined, offSlide: s.offSlide || undefined, colorMap: s.colorMap, minPt: s.minPt, maxPt: s.maxPt,
+      imageCoverage: r2(s.f.imageCoverage), contentImageCoverage: r2(s.f.contentCoverage), imageRoles: s.f.images ? { background: s.f.images - s.f.contentImages - s.f.decorImages, content: s.f.contentImages, decorative: s.f.decorImages } : undefined,
+      bounds: s.bounds, bleed: s.bleed.length ? s.bleed : undefined, bleedDetail: s.bleedDetail.length ? s.bleedDetail : undefined, offSlide: s.offSlide || undefined, overflow: s.overflow.length ? s.overflow : undefined, colorMap: s.colorMap, minPt: s.minPt, maxPt: s.maxPt,
       contrast: { status: s.worst ? 'low' : s.checked ? 'ok' : s.unchecked ? 'not-evaluated' : 'no-text', ratio: s.worst?.ratio, text: s.worst?.text, background: s.worst?.background, unchecked: s.unchecked ? r2(s.unchecked / (s.checked + s.unchecked)) : undefined } });
   }
 
@@ -717,6 +836,9 @@ function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S,
   if (oddT.length) add('inconsistent-title-size', 'info', `Titles on text slides vary by more than 4 pt from the typical ${medT} pt.`, oddT);
   const dense = S.filter((s) => s.f.words > 110).map((s) => s.i + 1);
   if (dense.length) add('dense-text', 'info', 'More than 110 words on one slide.', dense);
+  const over = S.filter((s) => s.offSlide);
+  if (over.length) add('content-overflow', 'warn', 'Text, a table, a chart or a diagram runs past the slide edge. Decorative pictures and shapes that bleed off the edge on purpose are not counted.', over.map((s) => s.i + 1),
+    over.slice(0, 5).map((s) => ({ slide: s.i + 1, kind: s.overflow[0].kind, edges: s.overflow[0].edges, byPct: s.overflow[0].byPct, sample: s.overflow[0].sample })));
 
   return {
     preserve: { description: 'Keep the template exactly as analysed. Tokens are the observed fonts, sizes, colours and margins; nothing is normalised.', tokens: observed },
