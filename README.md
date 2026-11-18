@@ -32,7 +32,7 @@ Every template is analysed in the browser into a versioned JSON **Design System*
 - PPTX has no font weights beyond bold/regular; "Semibold" etc. appear in the font name.
 - Charts, tables, SmartArt and video are detected by presence, position and size only.
 - Colour transforms other than lumMod/lumOff (tint, shade, satMod) are not applied; affected colours are flagged approximate. Group rotation/flips and picture pixel resolution are not evaluated. Contrast is not judged where text sits on a picture or gradient (it is reported as "not evaluated" instead). Colour-map overrides on slides and layouts (PowerPoint's dark background styles) are applied.
-- Slides without a title placeholder use the top, largest text box as the title (disclosed in the limits list).
+- Slides without a title placeholder use the largest text box as the title: in the top half, or lower when it is at least 1.5x the next size (disclosed in the limits list). Recurring template text (a brand name at the same place on 30% of the slides, typed page numbers) is never the title and is left out of word counts and margins; empty text boxes with no fill or outline are not counted as bleed.
 - Verified on python-pptx and pptxgenjs files only. PowerPoint, Keynote and Google Slides exports are untested.
 
 ## PPTX support: what is and isn't claimed

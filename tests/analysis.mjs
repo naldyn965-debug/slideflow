@@ -1,6 +1,7 @@
 // Browser-free tests for the analysis layer (parser + design). Run: npm run test:analysis   (needs `npm i`, uses jsdom)
 // Covers the Phase 2 ground truth that does not need a browser, plus Phase 2.1 precision fixes and Phase 2.2 classification/geometry.
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { analyse, DESIGN_VERSION } from './harness.mjs';
 const FX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -133,12 +134,59 @@ ok(!finding(PB, 'content-overflow') && PB.modes.enhance.findings.length === 0, '
 ok(near(PB.spacing.marginsPct.left, 8) && near(PB.spacing.marginsPct.top, 6) && near(PB.spacing.marginsPct.bottom, 30), `p22 bleed-everywhere: margins come from the text, not the bleed shapes (${JSON.stringify(PB.spacing.marginsPct)})`);
 ok(PB.limitations.some((l) => /Rotation of a single shape is applied/.test(l)), 'p22 geometry: limitations describe rotation handling');
 
+// ---------- Title extraction, repeated template text, phantom frames ----------
+// tests/make_fixture_p23.py builds a deck like the real FOOD deck (brand name + typed page number on slides 2-10, empty text boxes inside groups,
+// titles at 53% and 68% of the slide height). Before: every content slide was titled with the brand name, template text counted as content
+// (words, margins), slides 3-4 had no inferred title, and the empty text boxes were reported as decorative bleed on 9 slides.
+const T = await D('p23-template-text.pptx');
+const ts = (n) => T.slides[n - 1];
+ok(ts(1).title === 'COVER' && ts(2).title === 'Upper title' && ts(10).title === 'Thank you', `p23 title: inferred title text is the slide title (${ts(1).title} / ${ts(2).title} / ${ts(10).title})`);
+ok(ts(3).title === 'Lower title at fifty three' && ts(4).title === 'Lowest title at sixty eight', `p23 title: an 80 pt title at 53% and at 68% of the height is detected (${ts(3).title} / ${ts(4).title})`);
+ok(ts(5).title === '' && ts(6).title === '', `p23 title: a lower, non-dominant heading is not promoted, and the brand name is never the fallback (${JSON.stringify([ts(5).title, ts(6).title])})`);
+ok(!T.slides.some((s) => /Acme/.test(s.title)), 'p23 title: recurring brand text is never a slide title');
+ok(ts(2).templateText.map((x) => `${x.kind}:${x.text}`).join() === 'brand:Acme & Co.,pageNumber:02' && ts(9).templateText[1].text === '09' && ts(10).templateText.map((x) => x.kind).join() === 'brand', 'p23 template: brand name and page number found on slides 2-9, brand only on the closing slide');
+ok(!ts(1).templateText.length && ts(1).words === 10, 'p23 template: the cover\'s brand name sits at another place, so it is not template text and still counts');
+ok([2, 3, 4, 5, 6].map((n) => ts(n).words).join() === '26,31,33,33,32', `p23 template: brand name (3 words) and page number (1) leave the word counts (${[2, 3, 4, 5, 6].map((n) => ts(n).words)})`);
+ok(near(ts(2).bounds.left, 5.6) && near(ts(2).bounds.top, 30) && near(ts(2).bounds.right, 14.4) && near(ts(2).bounds.bottom, 28), `p23 template: content margins come from title and body, not from the brand name and page number (${JSON.stringify(ts(2).bounds)})`);
+ok(near(T.spacing.marginsPct.left, 5.6) && near(T.spacing.marginsPct.top, 30) && near(T.spacing.marginsPct.right, 14.4), `p23 template: template-wide margins follow (${JSON.stringify(T.spacing.marginsPct)})`);
+ok(ts(2).counts.text === 4 && ts(2).counts.shape === 2, `p23 template: template text stays in the slide structure (${JSON.stringify(ts(2).counts)})`);
+ok(!ts(7).templateText.some((x) => x.text === '42') && ts(7).words === 40 && near(ts(7).bounds.right, 12), 'p23 template: a number that does not follow the slide order ("42" on three slides) is content, not a page number');
+ok(T.recurring.some((r) => r.kind === 'text' && r.label === 'Acme & Co.' && r.count === 9), 'p23 template: the Phase 2 "recurring" list is unchanged');
+ok(cls(T) === 'title,text,text,text,text,text,text,text,text,closing', `p23 classes: unchanged by the fixes (${cls(T)})`);
+ok([1, 2, 3, 4, 5, 6, 8, 9, 10].every((n) => !ts(n).bleed && !ts(n).bleedDetail) && !T.slides.some((s) => s.offSlide), 'p23 phantom: empty text boxes (no text, fill or outline) crossing the top edge are neither bleed nor content');
+ok(ts(7).bleed?.join() === 'top' && ts(7).bleedDetail.length === 2 && T.spacing.bleedSlides === 1, `p23 phantom: empty text frames that ARE drawn (outline, fill) stay decorative bleed (${ts(7).bleedDetail?.length}, ${T.spacing.bleedSlides} slide)`);
+
+// The real deck (27 MB, not committed): FOOD.pptx / "Brown and Green Modern Food Presentation". Set FOOD_PPTX or put it at tests/fixtures/FOOD.pptx.
+const FOOD_FILE = process.env.FOOD_PPTX || path.join(FX, 'FOOD.pptx');
+let FD = null;
+if (existsSync(FOOD_FILE)) {
+  FD = (await analyse(FOOD_FILE)).design;
+  const f = (n) => FD.slides[n - 1];
+  const titles = ['FOOD', 'What is Food?', 'Food Groups', 'Fruits', 'Vegetables', 'Proteins', 'Grains', 'Dairy', 'Different Types of Meals', 'Food from Around the World', 'Healthy vs. Unhealthy Food', 'Importance of Drinking Water', 'Food Waste Problem', 'How to Eat Well', 'THANK YOU'];
+  ok(FD.slides.length === 15 && titles.every((t, k) => f(k + 1).title === t), `FOOD title: all 15 slides carry their content title (${FD.slides.map((s) => s.title).join(' | ')})`);
+  ok(f(10).title === 'Food from Around the World' && f(11).title === 'Healthy vs. Unhealthy Food', 'FOOD S10/S11: titles at 53% and 68% of the height are detected');
+  ok(!FD.slides.some((s) => s.title === 'Liceria & Co.'), 'FOOD title: "Liceria & Co." is never a slide title (it was the title of slides 2-14)');
+  ok(FD.slides.slice(1, 14).every((s) => s.templateText.length === 2 && s.templateText[0].kind === 'brand' && s.templateText[0].text === 'Liceria & Co.' && s.templateText[1].kind === 'pageNumber' && Number(s.templateText[1].text) === s.n) && !f(1).templateText.length && !f(15).templateText.length, 'FOOD template: brand name + page number found on slides 2-14, nothing on the cover and closing slide');
+  ok([f(2).words, f(10).words, f(11).words].join() === '64,53,52', `FOOD template: word counts leave out brand name and page number (S2/S10/S11 were 68/57/56; now ${[f(2).words, f(10).words, f(11).words]})`);
+  ok(near(f(2).bounds.left, 5.6) && near(f(2).bounds.top, 5.1) && near(f(2).bounds.right, 5.6) && near(f(2).bounds.bottom, 10), `FOOD template: S2 content margins (were 0/4.8/3/1.9 from the brand name and page number): ${JSON.stringify(f(2).bounds)}`);
+  ok(near(f(10).bounds.left, 5.6) && near(f(10).bounds.right, 13.2) && near(f(11).bounds.left, 6.3) && near(f(11).bounds.bottom, 18.7), `FOOD template: S10/S11 margins ${JSON.stringify(f(10).bounds)} ${JSON.stringify(f(11).bounds)}`);
+  ok(near(FD.spacing.marginsPct.left, 5.6) && near(FD.spacing.marginsPct.top, 5.1) && near(FD.spacing.marginsPct.right, 12.6) && near(FD.spacing.marginsPct.bottom, 14.5), `FOOD template: template-wide margins ${JSON.stringify(FD.spacing.marginsPct)}`);
+  ok(FD.recurring.length === 2 && FD.recurring.every((r) => r.count === 13) && FD.recurring.some((r) => r.kind === 'text' && r.label === 'Liceria & Co.'), 'FOOD template: the Phase 2 "recurring" list is unchanged (image + brand text, 13 slides each)');
+  ok(f(1).title === 'FOOD' && f(1).words === 20 && near(f(1).bounds.left, 29.5) && near(f(1).bounds.top, 18.6) && near(f(1).bounds.right, 29.5) && near(f(1).bounds.bottom, 17.7) && f(1).counts.image === 2 && f(1).counts.text === 5 && !f(1).bleed, 'FOOD S1: cover title, words, margins and shape counts are unchanged (its brand text sits at another place than on slides 2-14)');
+  ok(f(2).counts.shape === 8 && f(2).counts.text === 4 && f(10).counts.image === 4, 'FOOD template: counts of shapes, text boxes and pictures are unchanged (template text is flagged, not removed)');
+  ok([2, 4, 7, 8, 12].every((n) => f(n).bleedDetail === undefined || f(n).bleedDetail.every((b) => b.kind === 'picture')) && !f(2).bleed && FD.slides.slice(1, 14).every((s) => !s.bleedDetail || s.bleedDetail.every((b) => b.kind === 'picture')), 'FOOD phantom: the empty text boxes inside the groups are no longer reported as top bleed (only pictures remain)');
+  ok(f(10).bleed.join() === 'left,top,right,bottom' && f(11).bleed.join() === 'left,top' && f(10).bleedDetail.filter((b) => b.kind === 'picture').length === 3 && f(10).bleedDetail.filter((b) => b.kind === 'picture').every((b) => b.mode === 'flush'), `FOOD S10/S11: flush picture bleed is unchanged (${f(10).bleed}, ${f(11).bleed})`);
+  ok(FD.spacing.bleedSlides === 12 && FD.spacing.offSlideSlides === 0 && !FD.slides.some((s) => s.offSlide), `FOOD phantom: bleed slides 13 -> ${FD.spacing.bleedSlides}, nothing off-slide`);
+  ok(cls(FD) === 'text,text,text,text,text,text,text,text,text,text,text,text,text,text,closing', `FOOD classes: unchanged (${cls(FD)})`);
+} else console.log(`SKIPPED: FOOD.pptx checks (set FOOD_PPTX=/path/to/Brown_and_Green_Modern_Food_Presentation.pptx or copy it to tests/fixtures/FOOD.pptx)`);
+
 // ---------- contract ----------
 const nested = (v) => (Array.isArray(v) ? v.some((x) => Array.isArray(x) || nested(x)) : v && typeof v === 'object' ? Object.values(v).some(nested) : false);
-const all = [A, B, C, Dg, E, F, dark, dm, dx, S, PC, PA, PG, PB];
+const all = [A, B, C, Dg, E, F, dark, dm, dx, S, PC, PA, PG, PB, T, ...(FD ? [FD] : [])];
 ok(all.every((d) => !nested(d) && d.version === DESIGN_VERSION && d.version === 3 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'JSON: Firestore-safe, versioned 2, small');
 const v1Keys = ['n', 'title', 'layout', 'layoutType', 'class', 'confidence', 'reasons', 'background', 'words', 'counts', 'imageCoverage', 'minPt', 'maxPt'];
 ok(all.every((d) => d.slides.every((s) => v1Keys.every((k) => k in s || s[k] === undefined) && ['title', 'section', 'text', 'image', 'comparison', 'chart-table', 'closing', 'other'].includes(s.class))), 'JSON: Phase 2 slide fields kept (changes are additive)');
+ok(all.every((d) => d.slides.every((s) => s.templateText === undefined || s.templateText.every((x) => ['brand', 'pageNumber'].includes(x.kind) && typeof x.text === 'string'))), 'JSON: templateText entries are additive and typed');
 ok(['left', 'right', 'top', 'bottom'].every((k) => k in dark.spacing.marginsPct) && 'gapPct' in dark.spacing && 'alignment' in dark.spacing && 'modes' in dark && 'limitations' in dark, 'JSON: Phase 2 top-level shape kept');
 ok(all.every((d) => d.slides.every((s) => (s.imageRoles === undefined || ['background', 'content', 'decorative'].every((k) => Number.isInteger(s.imageRoles[k]))) && (s.overflow === undefined || s.offSlide === true) && (s.bleedDetail === undefined || (s.bleed && s.bleedDetail.every((b) => ['picture', 'shape'].includes(b.kind) && ['flush', 'beyond'].includes(b.mode)))))), 'JSON: Phase 2.2 fields (imageRoles, bleedDetail, overflow) are additive and consistent with bleed / offSlide');
 const strip = (d) => JSON.stringify({ ...d, analyzedAt: 0 });

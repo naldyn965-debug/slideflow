@@ -252,7 +252,7 @@ function recordOf(el, n, toSlide, env) {
   const mas = ph && phShape(ph, env.master?.doc);
   const own = xfrmOf(el);
   const rot = own ? rotOf(el) : 0;
-  const rec = { kind: 'shape', ph: ph ? normType(ph.type) : null, phRaw: ph?.type || null, box: own ? toSlide(rotatedBox(own, rot)) : xfrmOf0(lay) || xfrmOf0(mas), rotated: isRotated(rot), fill: null, geom: null, text: '', words: 0, runs: [], image: null };
+  const rec = { kind: 'shape', ph: ph ? normType(ph.type) : null, phRaw: ph?.type || null, box: own ? toSlide(rotatedBox(own, rot)) : xfrmOf0(lay) || xfrmOf0(mas), rotated: isRotated(rot), fill: null, geom: null, text: '', words: 0, runs: [], image: null, textFrame: false, outline: false };
   const spPr = kid(el, 'spPr');
   if (n === 'sp') {
     rec.geom = kid(spPr, 'prstGeom')?.getAttribute('prst') || (kid(spPr, 'custGeom') ? 'custom' : null);
@@ -262,6 +262,8 @@ function recordOf(el, n, toSlide, env) {
       const c = fr && fr.getAttribute('idx') !== '0' ? colorOf(fr, env.cx) : null;
       if (c) rec.fill = { type: 'solid', hex: c.hex, slot: c.slot, approx: c.approx, viaStyle: true };
     }
+    rec.textFrame = !!kid(el, 'txBody');
+    rec.outline = hasOutline(el);
     Object.assign(rec, readText(el, ph, lay, mas, env));
     if (rec.words) rec.kind = 'text';
     else if (rec.fill?.type === 'image') { rec.kind = 'image'; rec.image = { target: rec.fill.target }; }
@@ -274,6 +276,16 @@ function recordOf(el, n, toSlide, env) {
     rec.kind = desc(el, 'tbl').length ? 'table' : desc(el, 'chart').length ? 'chart' : 'object';
   }
   return rec;
+}
+/** Whether a shape draws an outline: its own <a:ln> with a fill, or one supplied by its style (<p:style><a:lnRef idx>) unless <a:ln> says noFill. */
+function hasOutline(el) {
+  const ln = kid(kid(el, 'spPr'), 'ln');
+  if (ln) {
+    if (kid(ln, 'noFill')) return false;
+    if (['solidFill', 'gradFill', 'pattFill'].some((t) => kid(ln, t))) return true;
+  }
+  const lr = kid(kid(el, 'style'), 'lnRef');
+  return !!lr && lr.getAttribute('idx') !== '0';
 }
 function walkTree(tree, toSlide, env, out) {
   for (const el of tree ? tree.children : []) {
@@ -300,7 +312,8 @@ const EDGES = ['left', 'right', 'top', 'bottom'];
 /**
  * What a shape is for, so that decoration never distorts margins and real overflow is never hidden as decoration (Phase 2.2).
  *   footer      date / footer / slide-number placeholders
- *   empty       a placeholder nobody filled: it is not drawn when presenting, so it is neither decoration nor content
+ *   empty       a placeholder nobody filled, or a text frame with no text, no fill and no outline (a "phantom" frame, e.g. the empty text box
+ *               Canva-style exports leave inside every group): nothing is drawn, so it is neither decoration nor content
  *   content     everything the reader is meant to read: text, tables, charts, diagrams, and pictures/shapes inside the slide.
  *               When content runs past an edge it is overflow (`edges`, `by`): text is judged by the area its words occupy
  *               (frame minus insets: a frame that overshoots by less than its inset clips nothing), data objects by their frame
@@ -317,7 +330,9 @@ function roleOf(sh, W, H) {
   const x0 = Math.max(0, b.x); const y0 = Math.max(0, b.y); const x1 = Math.min(W, b.x + b.w); const y1 = Math.min(H, b.y + b.h);
   if (x1 <= x0 || y1 <= y0) return { role: 'offslide', edges: [], by: 0 };
   const text = sh.words > 0;
-  if (sh.phRaw && !text && sh.kind === 'shape' && (!sh.fill || sh.fill.type === 'none')) return { role: 'empty', edges: [], by: 0 };
+  const bare = !text && sh.kind === 'shape' && (!sh.fill || sh.fill.type === 'none');
+  if (sh.phRaw && bare) return { role: 'empty', edges: [], by: 0 };
+  if (!sh.phRaw && bare && sh.textFrame && !sh.outline) return { role: 'empty', edges: [], by: 0 };
   // Area that must stay inside the slide: the text area for text, the frame for everything else.
   const ins = text && !sh.rotated ? { ...DEFAULT_INSET, ...sh.insets } : { l: 0, t: 0, r: 0, b: 0 };
   const r = { x: b.x + ins.l, y: b.y + ins.t, w: Math.max(0, b.w - ins.l - ins.r), h: Math.max(0, b.h - ins.t - ins.b) };
@@ -389,15 +404,19 @@ const IMG_TYPES = ['picTx', 'txAndClipArt', 'clipArtAndTx', 'txAndMedia', 'media
 const KW_IMG_NAME = /\b(pictures?|photos?|images?|gallery)\b/i;
 
 const isTitle = (s) => s.ph === 'title' || s.titleLike;
-/** Slides built from plain text boxes have no title placeholder: treat the top, strictly-largest text box as the title. */
+/**
+ * Slides built from plain text boxes have no title placeholder: treat the strictly-largest text box as the title. Template text (brand
+ * name, slide numbers) is never a candidate. With several candidates the title must start in the top half, unless it clearly dominates
+ * (at least 1.5x the next size): then it may sit lower, anywhere above the footer band, as on divider slides with the heading at the bottom.
+ */
 function inferTitle(shapes, H) {
   if (shapes.some((s) => s.ph === 'title')) return false;
-  const c = shapes.filter((s) => s.kind === 'text' && !FOOTER.has(s.phRaw) && s.box && s.runs.length)
+  const c = shapes.filter((s) => s.kind === 'text' && !s.template && !FOOTER.has(s.phRaw) && s.box && s.runs.length)
     .map((s) => ({ s, sz: Math.max(...s.runs.map((r) => r.sz)) }));
   if (!c.length) return false;
   c.sort((a, b) => b.sz - a.sz);
   if (c.length === 1) { if (c[0].sz < 28 || c[0].s.box.y > H * 0.65) return false; } // a lone large text box is a title (divider slides)
-  else if (c[0].sz <= c[1].sz || c[0].s.box.y > H * 0.5) return false;
+  else if (c[0].sz <= c[1].sz || (c[0].s.box.y > H * 0.5 && !(c[0].sz >= 1.5 * c[1].sz && c[0].s.box.y <= H * 0.85))) return false;
   c[0].s.titleLike = true; c[0].s.role = 'title';
   return true;
 }
@@ -415,6 +434,41 @@ function recurringPictures(S, W, H) {
   const min = Math.max(2, Math.ceil(n * 0.3));
   return new Set([...count].filter(([, c]) => c >= min).map(([k]) => k));
 }
+/**
+ * Template text: text that belongs to the template, not to the slide. Two kinds, both needing at least 30% of the slides (and 2+):
+ *   brand       the same short text (8 words and 80 characters at most) at about the same place and size: a brand name, tagline, "Confidential"
+ *   pageNumber  a plain number at about the same place whose value follows the slide order (value minus slide number is constant)
+ * Shapes are only flagged (`template`), never removed: they stay in the slide structure, counts and typography. Placeholders are never flagged.
+ */
+const DIGITS = /^[0-9\u0660-\u0669\u06F0-\u06F9]{1,3}$/;
+const digitValue = (t) => Number(t.replace(/[\u0660-\u0669]/g, (d) => d.charCodeAt(0) - 0x660).replace(/[\u06F0-\u06F9]/g, (d) => d.charCodeAt(0) - 0x6f0));
+const sameSpot = (a, b, W, H) => Math.abs(a.x - b.x) <= 0.02 * W && Math.abs(a.y - b.y) <= 0.02 * H && Math.abs(a.w - b.w) <= 0.03 * W && Math.abs(a.h - b.h) <= 0.03 * H;
+function markTemplateText(S, W, H) {
+  const n = S.length;
+  if (n < 3) return;
+  const min = Math.max(2, Math.ceil(n * 0.3));
+  const groups = new Map(); // key -> clusters of { box, items: [{ s, sh }] }
+  for (const s of S) {
+    for (const sh of s.shapes) {
+      if (sh.kind !== 'text' || sh.ph || !sh.box || sh.text.length > 80 || sh.words > 8) continue; // a label, name or notice, never a sentence of body text
+      const txt = sh.text.replace(/\s+/g, ' ').trim();
+      const key = DIGITS.test(txt) ? '#num' : `t|${txt.toLowerCase()}`;
+      const clusters = groups.get(key) || groups.set(key, []).get(key);
+      const c = clusters.find((k) => sameSpot(k.box, sh.box, W, H));
+      if (c) c.items.push({ s, sh, txt }); else clusters.push({ box: sh.box, items: [{ s, sh, txt }] });
+    }
+  }
+  for (const [key, clusters] of groups) {
+    for (const c of clusters) {
+      const slides = new Set(c.items.map((x) => x.s.i));
+      if (slides.size < min) continue;
+      if (key !== '#num') { c.items.forEach((x) => { x.sh.template = 'brand'; }); continue; }
+      const offsets = new Set(c.items.map((x) => digitValue(x.txt) - (x.s.i + 1)));
+      if (offsets.size === 1 && slides.size === c.items.length) c.items.forEach((x) => { x.sh.template = 'pageNumber'; });
+    }
+  }
+}
+
 /**
  * Role of a picture that is not the slide background. `decorative`: artwork repeated across the deck, a logo or icon (under 3% of the
  * slide), or a thin band or rail along an edge (under 12% thick, over half the slide long). Everything else is `content`.
@@ -459,7 +513,7 @@ function features(shapes, bg, layout, W, H, deco = new Set()) {
   const rest = pics.filter((s) => s.layoutRole !== 'background');
   const decorPics = rest.filter((s) => pictureRole(s, W, H, deco) === 'decorative');
   const contentPics = rest.filter((s) => !decorPics.includes(s));
-  const body = shapes.filter((s) => s.kind === 'text' && !FOOTER.has(s.phRaw));
+  const body = shapes.filter((s) => s.kind === 'text' && !FOOTER.has(s.phRaw) && !s.template); // template text (brand name, slide numbers) is not slide content
   const blocks = body.filter((s) => !isTitle(s));
   const area = (s) => (s.box ? Math.min(A, Math.max(0, s.box.w) * Math.max(0, s.box.h)) : 0);
   const cols = blocks.filter((s) => s.box && s.words >= 3);
@@ -541,6 +595,13 @@ function classify(f, i, n, cover) {
   return out('other', 'low', 'no readable text, pictures, tables or charts');
 }
 
+/** Final title of a slide: the inferred title text when there is one, else the parser's. Never template text such as a recurring brand name. */
+function titleOf(s) {
+  if (s.titleText != null) return s.titleText;
+  const first = s.ps.title;
+  return s.shapes.some((x) => x.template && x.text.split('\n')[0].slice(0, 160) === first) && !s.shapes.some((x) => x.ph === 'title' && x.text) ? '' : first;
+}
+
 // ---------- main ----------
 /** Analyse a parsed deck (output of parsePptx, which keeps the JSZip handle). Returns the Design System JSON. */
 export async function extractDesign(parsed) {
@@ -577,8 +638,6 @@ export async function extractDesign(parsed) {
     const bg = own ? { ...own, source: 'slide' } : lbg ? { ...lbg, source: 'layout' } : mbg ? { ...mbg, source: 'master' } : { type: 'none', source: 'default' };
     const shapes = [];
     walkTree(desc(doc, 'spTree')[0], (b) => b, e, shapes);
-    if (inferTitle(shapes, H)) env.stats.inferredTitles++;
-    for (const sh of shapes) { const r = roleOf(sh, W, H); sh.layoutRole = r.role; sh.edges = r.edges; sh.by = r.by; }
     const effBg = bgHex(bg) || (bg.type === 'none' && cx.theme.colors[cx.clrMap.bg1]) || null;
     // Shapes drawn beneath the slide's own shapes: master, then layout (unless hidden).
     const under = [];
@@ -586,8 +645,16 @@ export async function extractDesign(parsed) {
       if (master && !hidesMasterShapes(layout?.doc)) under.push(...layerRecs(master, env, cx).filter((r) => !r.ph));
       if (layout) under.push(...layerRecs(layout, env, cx).filter((r) => !r.ph));
     }
-    shapes.forEach((sh, k) => { if (sh.runs.length) sh.backdrop = backdropOf(sh, [...under, ...shapes.slice(0, k)], { hex: effBg, type: bg.type }); });
-    S.push({ i, ps, shapes, bg, effBg, f: null, cls: null, cx, layout, colorMap });
+    S.push({ i, ps, shapes, bg, effBg, under, f: null, cls: null, cx, layout, colorMap, titleText: null });
+  }
+  // Template text is only known once every slide has been read; titles, roles and backdrops are settled after that.
+  markTemplateText(S, W, H);
+  for (const s of S) {
+    if (inferTitle(s.shapes, H)) env.stats.inferredTitles++;
+    for (const sh of s.shapes) { const r = roleOf(sh, W, H); sh.layoutRole = r.role; sh.edges = r.edges; sh.by = r.by; }
+    s.shapes.forEach((sh, k) => { if (sh.runs.length) sh.backdrop = backdropOf(sh, [...s.under, ...s.shapes.slice(0, k)], { hex: s.effBg, type: s.bg.type }); });
+    const inferred = s.shapes.find((x) => x.titleLike);
+    s.titleText = inferred ? inferred.text.split('\n')[0].slice(0, 160) : null;
   }
   // Features need the whole deck (a picture repeated at the same place on many slides is template artwork), and classification
   // needs every slide's features (the last slide is compared with the cover), so both run after the per-slide pass.
@@ -610,7 +677,7 @@ function assemble(parsed, env, S) {
   ];
   if (theme.missing) limitations.push('No theme part was found, so theme colours and fonts are unavailable and scheme-based colours could not be resolved.');
   if (env.stats.unappliedMods.size) limitations.push(`Colour transforms not applied: ${[...env.stats.unappliedMods].join(', ')}. Affected colours may be approximate.`);
-  if (env.stats.inferredTitles) limitations.push(`${env.stats.inferredTitles} slide(s) have no title placeholder; the top, largest text box was treated as the title.`);
+  if (env.stats.inferredTitles) limitations.push(`${env.stats.inferredTitles} slide(s) have no title placeholder; the largest text box was treated as the title.`);
   limitations.push('Rotation of a single shape is applied to its bounds; rotation and flips of groups are ignored when positioning shapes.');
   limitations.push('Decorative bleed (pictures and shapes flush with or past an edge) is told apart from content overflow by shape type and position only; text is judged by its frame minus insets, so text that wraps beyond its frame is not detected.');
 
@@ -626,8 +693,8 @@ function assemble(parsed, env, S) {
     for (const d of [...(s.layout?.decor || []), ...(s.layout?.master?.decor || [])]) {
       if (d.fill && d.box.w * d.box.h < 8100) { const w = (d.box.w * d.box.h) / 10000; addPal({ hex: d.fill, slot: d.slot, approx: d.approx }, 'fill', w); totFill += w; }
     }
-    // Margins describe the content frame only: pictures and panels that bleed off the slide, and full-slide backgrounds, are decoration.
-    const content = s.shapes.filter((x) => x.layoutRole === 'content' && ['text', 'image', 'table', 'chart', 'object'].includes(x.kind) && !(x.box.w >= 0.9 * W && x.box.h >= 0.9 * H));
+    // Margins describe the content frame only: pictures and panels that bleed off the slide, full-slide backgrounds and template text are decoration.
+    const content = s.shapes.filter((x) => x.layoutRole === 'content' && !x.template && ['text', 'image', 'table', 'chart', 'object'].includes(x.kind) && !(x.box.w >= 0.9 * W && x.box.h >= 0.9 * H));
     // Decorative bleed is intentional (reported, never a problem); overflow is content (text, table, chart, diagram) that runs past
     // the slide edge or sits entirely outside it. The two are reported separately.
     const bleedShapes = s.shapes.filter((x) => x.layoutRole === 'bleed');
@@ -761,7 +828,7 @@ function assemble(parsed, env, S) {
   const conf = { high: 0, medium: 0, low: 0 };
   for (const s of S) {
     classes[s.cls.class]++; conf[s.cls.confidence]++;
-    slideRecs.push({ n: s.i + 1, title: s.ps.title, layout: s.layout?.name || null, layoutType: s.layout?.type || null, class: s.cls.class, confidence: s.cls.confidence, reasons: s.cls.reasons,
+    slideRecs.push({ n: s.i + 1, title: titleOf(s), templateText: s.shapes.filter((x) => x.template).map((x) => ({ kind: x.template, text: x.text.slice(0, 40) })), layout: s.layout?.name || null, layoutType: s.layout?.type || null, class: s.cls.class, confidence: s.cls.confidence, reasons: s.cls.reasons,
       background: { type: s.bg.type, hex: s.bg.hex || s.effBg || null, source: s.bg.source, picture: s.f.backdropImage || undefined }, words: s.f.words, counts: s.shapeCount,
       imageCoverage: r2(s.f.imageCoverage), contentImageCoverage: r2(s.f.contentCoverage), imageRoles: s.f.images ? { background: s.f.images - s.f.contentImages - s.f.decorImages, content: s.f.contentImages, decorative: s.f.decorImages } : undefined,
       bounds: s.bounds, bleed: s.bleed.length ? s.bleed : undefined, bleedDetail: s.bleedDetail.length ? s.bleedDetail : undefined, offSlide: s.offSlide || undefined, overflow: s.overflow.length ? s.overflow : undefined, colorMap: s.colorMap, minPt: s.minPt, maxPt: s.maxPt,
