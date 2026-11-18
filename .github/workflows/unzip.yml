@@ -15,7 +15,9 @@ jobs:
           test -n "$ZIP"
           find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name "$ZIP" -exec rm -rf {} +
           unzip -q "$ZIP" -d /tmp/x
-          cp -a /tmp/x/slideflow/. .
+          SRC=$(ls -d /tmp/x/*/ | head -n 1)
+          rm -rf "$SRC/.github"
+          cp -a "$SRC". .
           rm "$ZIP"
       - name: Commit
         run: |
