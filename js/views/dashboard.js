@@ -17,7 +17,7 @@ export function dashboard(ctx, root) {
       section('Recent projects', projects.length > 5 && h('a', { href: '#/projects' }, 'View all'),
         projects.length ? h('ul', { class: 'rows' }, projects.slice(0, 5).map((p) => projectRow(p, { onDelete: async () => { if (await deleteProject(ctx, p)) reload(); } }))) : newProjectEmpty(ctx)),
       section('Template library', templates.length > 4 && h('a', { href: '#/templates' }, 'Manage templates'),
-        templates.length ? h('div', { class: 'tpl-grid' }, templates.slice(0, 4).map((t) => templateCard(ctx, t, { onDeleted: () => reload() })))
+        templates.length ? h('div', { class: 'tpl-grid' }, templates.slice(0, 4).map((t) => templateCard(ctx, t, { onDeleted: () => reload(), onChanged: () => reload() })))
           : emptyState({ title: 'No templates yet', body: 'Upload a .pptx file. SlideFlow validates it and reads its slides before saving.', actions: [h('button', { class: 'btn', type: 'button', onclick: upload }, icon('upload'), 'Upload template')] })));
   });
 }

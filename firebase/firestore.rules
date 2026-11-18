@@ -5,10 +5,10 @@ service cloud.firestore {
     function owner(uid) { return request.auth != null && request.auth.uid == uid; }
     function text(v, max) { return v is string && v.size() > 0 && v.size() <= max; }
 
-    // Templates are immutable records of an uploaded file (delete + re-upload to change).
+    // Templates are immutable records of an uploaded file, except the derived analysis (design, designVersion) and the chosen mode.
     function validTemplate(d, uid, id) {
       return d.keys().hasOnly(['name', 'fileName', 'size', 'storagePath', 'slideCount', 'width', 'height',
-                               'mediaCount', 'imageRefs', 'slideTitles', 'warnings', 'schemaVersion', 'createdAt', 'updatedAt'])
+                               'mediaCount', 'imageRefs', 'slideTitles', 'warnings', 'design', 'designVersion', 'mode', 'schemaVersion', 'createdAt', 'updatedAt'])
         && d.keys().hasAll(['name', 'fileName', 'size', 'storagePath', 'slideCount', 'width', 'height', 'schemaVersion', 'createdAt', 'updatedAt'])
         && text(d.name, 120) && text(d.fileName, 255)
         && d.size is int && d.size > 0 && d.size <= 52428800
@@ -17,22 +17,26 @@ service cloud.firestore {
         && d.width is int && d.width > 0 && d.height is int && d.height > 0
         && (!('slideTitles' in d) || (d.slideTitles is list && d.slideTitles.size() <= 200))
         && (!('warnings' in d) || (d.warnings is list && d.warnings.size() <= 20))
+        && (!('design' in d) || (d.design is map && d.designVersion is int && d.designVersion >= 1))
+        && (!('mode' in d) || d.mode in ['preserve', 'enhance'])
         && d.schemaVersion == 1 && d.createdAt is number && d.updatedAt is number;
     }
 
     function validProject(d) {
-      return d.keys().hasOnly(['name', 'templateId', 'templateName', 'schemaVersion', 'createdAt', 'updatedAt'])
+      return d.keys().hasOnly(['name', 'templateId', 'templateName', 'mode', 'schemaVersion', 'createdAt', 'updatedAt'])
         && d.keys().hasAll(['name', 'schemaVersion', 'createdAt', 'updatedAt'])
         && text(d.name, 120)
         && (d.get('templateId', null) == null || (d.templateId is string && d.templateId.size() <= 64))
         && (d.get('templateName', null) == null || (d.templateName is string && d.templateName.size() <= 120))
+        && (!('mode' in d) || d.mode in ['preserve', 'enhance'])
         && d.schemaVersion == 1 && d.createdAt is number && d.updatedAt is number;
     }
 
     match /users/{uid}/templates/{id} {
       allow read, delete: if owner(uid);
       allow create: if owner(uid) && validTemplate(request.resource.data, uid, id);
-      allow update: if false;
+      allow update: if owner(uid) && validTemplate(request.resource.data, uid, id)
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['design', 'designVersion', 'mode']);
     }
 
     match /users/{uid}/projects/{id} {

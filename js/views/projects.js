@@ -1,6 +1,6 @@
 import { h, icon } from '../lib/dom.js';
 import { LIMITS } from '../config.js';
-import { ago } from '../lib/format.js';
+import { ago, MODE_LABEL } from '../lib/format.js';
 import { confirmDialog, modal } from '../ui/modal.js';
 import { emptyState, errorState, loadInto, pageHeader, spinner } from '../ui/states.js';
 
@@ -13,6 +13,8 @@ export async function openNewProject(ctx) {
 
   const name = h('input', { class: 'input', id: 'p-name', maxlength: LIMITS.maxNameLength, placeholder: 'Quarterly review', required: true });
   const tpl = h('select', { class: 'input' }, h('option', { value: '' }, 'No template'), templates.map((t) => h('option', { value: t.id }, t.name)));
+  const mode = h('select', { class: 'input' }, Object.entries(MODE_LABEL).map(([v, l]) => h('option', { value: v }, l)));
+  tpl.addEventListener('change', () => { mode.value = templates.find((t) => t.id === tpl.value)?.mode || 'preserve'; }); // default to the template's chosen mode
   const save = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Create project');
   const err = h('div');
   m.body.replaceChildren(h('form', { class: 'stack', novalidate: true, onsubmit: async (e) => {
@@ -21,12 +23,13 @@ export async function openNewProject(ctx) {
     if (!clean) return name.focus();
     save.disabled = true; m.busy = true;
     try {
-      const p = await ctx.store.projects.create({ name: clean, template: templates.find((t) => t.id === tpl.value) });
+      const p = await ctx.store.projects.create({ name: clean, template: templates.find((t) => t.id === tpl.value), mode: mode.value });
       m.busy = false; m.close(); location.hash = `#/projects/${p.id}`;
     } catch (ex) { console.error(ex); m.busy = false; save.disabled = false; err.replaceChildren(errorState(ex)); }
   } },
     h('label', { class: 'field' }, h('span', {}, 'Project name'), name),
     h('label', { class: 'field' }, h('span', {}, 'Template'), tpl, templates.length === 0 && h('small', { class: 'muted' }, 'Upload a template first if you want to start from one.')),
+    h('label', { class: 'field' }, h('span', {}, 'Design mode'), mode, h('small', { class: 'muted' }, 'Preserve Design keeps the template as is. Smart Enhance keeps its identity but improves readability. Used when slides are generated.')),
     err,
     h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancel'), save)));
   name.focus();

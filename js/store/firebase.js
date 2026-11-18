@@ -41,10 +41,10 @@ export async function createStore() {
     projects: {
       list: () => recent('projects'),
       get: (id) => one('projects', id),
-      async create({ name, template }) {
+      async create({ name, template, mode = 'preserve' }) {
         const id = crypto.randomUUID();
         const now = Date.now();
-        const p = { name, templateId: template?.id ?? null, templateName: template?.name ?? null, schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
+        const p = { name, templateId: template?.id ?? null, templateName: template?.name ?? null, mode, schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
         await F.setDoc(F.doc(col('projects'), id), p);
         return { id, ...p };
       },
@@ -54,7 +54,7 @@ export async function createStore() {
     templates: {
       list: () => recent('templates'),
       get: (id) => one('templates', id),
-      async add(file, { name, summary }, onProgress) {
+      async add(file, { name, summary, design }, onProgress) {
         const id = crypto.randomUUID();
         const path = `users/${user.id}/templates/${id}.pptx`;
         const ref = S.ref(storage, path);
@@ -63,10 +63,14 @@ export async function createStore() {
           task.on('state_changed', (s) => onProgress?.(s.bytesTransferred / s.totalBytes), reject, resolve);
         });
         const now = Date.now();
-        const doc = { name, fileName: file.name, size: file.size, storagePath: path, ...summary, schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
+        const doc = { name, fileName: file.name, size: file.size, storagePath: path, ...summary, ...(design ? { design, designVersion: design.version } : {}), mode: 'preserve', schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
         try { await F.setDoc(F.doc(col('templates'), id), doc); }
         catch (e) { await S.deleteObject(ref).catch(() => {}); throw e; } // no orphaned files
         return { id, ...doc };
+      },
+      async update(t, patch) { // design / designVersion / mode only (enforced by firestore.rules)
+        await F.updateDoc(F.doc(col('templates'), t.id), patch);
+        return { ...t, ...patch };
       },
       file: (t) => S.getBlob(S.ref(storage, t.storagePath)), // needs bucket CORS, see README
       async remove(t) {

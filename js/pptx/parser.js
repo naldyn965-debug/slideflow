@@ -16,12 +16,12 @@ export class PptxError extends Error {
 }
 
 // ---- XML helpers (localName based, so namespace prefixes don't matter) ----
-const kids = (el, name) => (el ? [...el.children].filter((c) => c.localName === name) : []);
-const kid = (el, name) => kids(el, name)[0] || null;
-const desc = (el, name) => [...el.getElementsByTagNameNS('*', name)];
-const num = (el, a) => Number(el.getAttribute(a)) || 0;
+export const kids = (el, name) => (el ? [...el.children].filter((c) => c.localName === name) : []);
+export const kid = (el, name) => kids(el, name)[0] || null;
+export const desc = (el, name) => [...el.getElementsByTagNameNS('*', name)];
+export const num = (el, a) => Number(el.getAttribute(a)) || 0;
 
-async function readXml(zip, path) {
+export async function readXml(zip, path) {
   const f = zip.file(path);
   if (!f) return null;
   if (f._data && f._data.uncompressedSize > LIMITS.maxXmlBytes) throw new PptxError(`${path} is unusually large.`, 'too-large');
@@ -42,7 +42,7 @@ function resolvePath(fromPart, target) {
   return parts.join('/');
 }
 
-async function readRels(zip, part) {
+export async function readRels(zip, part) {
   const i = part.lastIndexOf('/') + 1;
   const doc = await readXml(zip, `${part.slice(0, i)}_rels/${part.slice(i)}.rels`);
   const rels = new Map();
@@ -70,11 +70,11 @@ function readXfrm(x) {
   if (chOff && chExt) box.child = { x: num(chOff, 'x'), y: num(chOff, 'y'), w: num(chExt, 'cx'), h: num(chExt, 'cy') };
   return box;
 }
-function xfrmOf(el) {
+export function xfrmOf(el) {
   const holder = el.localName === 'graphicFrame' ? el : kid(el, 'spPr') || kid(el, 'grpSpPr');
   return readXfrm(kid(holder, 'xfrm'));
 }
-function intoGroup(box, g) {
+export function intoGroup(box, g) {
   const c = g.child;
   if (!c) return box;
   const sx = c.w ? g.w / c.w : 1;
@@ -82,12 +82,12 @@ function intoGroup(box, g) {
   return { x: g.x + (box.x - c.x) * sx, y: g.y + (box.y - c.y) * sy, w: box.w * sx, h: box.h * sy };
 }
 
-function placeholderOf(el) {
+export function placeholderOf(el) {
   const nv = kid(el, 'nvSpPr') || kid(el, 'nvPicPr') || kid(el, 'nvGraphicFramePr');
   const ph = kid(kid(nv, 'nvPr'), 'ph');
   return ph ? { type: ph.getAttribute('type') || 'body', idx: ph.getAttribute('idx') } : null;
 }
-const normType = (t) => (t === 'ctrTitle' ? 'title' : t);
+export const normType = (t) => (t === 'ctrTitle' ? 'title' : t);
 
 // Placeholders without their own xfrm inherit position from the layout, then the master.
 function inheritedBox(ph, docs) {
@@ -105,7 +105,7 @@ function inheritedBox(ph, docs) {
 }
 
 // ---- text ----
-function paragraphsText(container) {
+export function paragraphsText(container) {
   const body = kid(container, 'txBody');
   if (!body) return '';
   return kids(body, 'p')
@@ -113,7 +113,7 @@ function paragraphsText(container) {
     .join('\n')
     .trim();
 }
-function tableText(frame) {
+export function tableText(frame) {
   return desc(frame, 'tr').map((tr) => kids(tr, 'tc').map(paragraphsText).join('\t')).join('\n').trim();
 }
 

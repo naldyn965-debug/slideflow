@@ -1,11 +1,12 @@
 import { h, icon } from '../lib/dom.js';
-import { ago, fmtBytes, plural } from '../lib/format.js';
+import { ago, fmtBytes, MODE_LABEL, plural } from '../lib/format.js';
+import { classSummary, fontLine, paletteRow } from '../ui/design-panel.js';
 import { confirmDialog } from '../ui/modal.js';
 import { emptyState, loadInto, pageHeader } from '../ui/states.js';
 import { openPreview } from '../ui/preview.js';
 import { openUpload, pickAndUpload } from '../ui/upload.js';
 
-export function templateCard(ctx, t, { onDeleted } = {}) {
+export function templateCard(ctx, t, { onDeleted, onChanged } = {}) {
   const ratio = t.width / t.height;
   const frame = h('div', { class: 'frame' }, h('span', {}, t.slideTitles?.[0] || t.name));
   frame.style.aspectRatio = `${t.width} / ${t.height}`;
@@ -21,13 +22,16 @@ export function templateCard(ctx, t, { onDeleted } = {}) {
   };
 
   return h('article', { class: 'tpl' },
-    h('button', { class: 'tpl-cover', type: 'button', 'aria-label': `Preview ${t.name}`, onclick: () => openPreview(ctx, t) }, frame),
+    h('button', { class: 'tpl-cover', type: 'button', 'aria-label': `Preview ${t.name}`, onclick: () => openPreview(ctx, t, { onChange: onChanged }) }, frame),
     h('div', { class: 'tpl-info' },
       h('h3', { title: t.name }, t.name),
       h('p', { class: 'muted' }, `${plural(t.slideCount, 'slide')}, ${fmtBytes(t.size)}`),
-      h('p', { class: 'muted' }, `Added ${ago(t.createdAt)}`)),
+      h('p', { class: 'muted' }, `Added ${ago(t.createdAt)}`),
+      t.design
+        ? h('div', { class: 'tpl-design' }, paletteRow(t.design), h('p', { class: 'muted' }, fontLine(t.design)), h('p', { class: 'muted' }, classSummary(t.design)), h('p', { class: 'muted' }, MODE_LABEL[t.mode || 'preserve']))
+        : h('p', { class: 'muted' }, 'Design not analyzed yet. Open Preview to analyze it.')),
     h('div', { class: 'tpl-actions' },
-      h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openPreview(ctx, t) }, icon('eye'), 'Preview'),
+      h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openPreview(ctx, t, { onChange: onChanged }) }, icon('eye'), 'Preview'),
       h('button', { class: 'icon-btn danger', type: 'button', 'aria-label': `Delete ${t.name}`, onclick: remove }, icon('trash'))));
 }
 
@@ -45,6 +49,6 @@ export function templates(ctx, root) {
   root.append(pageHeader({ title: 'Templates', sub: 'PPTX files SlideFlow will build presentations from.' }), dz, body);
   const reload = loadInto(body, () => ctx.store.templates.list(), (list) => {
     if (!list.length) return body.append(emptyState({ title: 'No templates yet', body: 'Upload a .pptx file to start your library. SlideFlow checks it and reads its slides before saving.' }));
-    body.append(h('div', { class: 'tpl-grid' }, list.map((t) => templateCard(ctx, t, { onDeleted: () => reload() }))));
+    body.append(h('div', { class: 'tpl-grid' }, list.map((t) => templateCard(ctx, t, { onDeleted: () => reload(), onChanged: () => reload() }))));
   });
 }

@@ -36,9 +36,9 @@ export async function createStore() {
     projects: {
       list: async () => (await read('projects', (s) => s.getAll())).sort(newest),
       get: async (id) => (await read('projects', (s) => s.get(id))) || null,
-      async create({ name, template }) {
+      async create({ name, template, mode = 'preserve' }) {
         const now = Date.now();
-        const p = { id: crypto.randomUUID(), name, templateId: template?.id ?? null, templateName: template?.name ?? null, schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
+        const p = { id: crypto.randomUUID(), name, templateId: template?.id ?? null, templateName: template?.name ?? null, mode, schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
         await commit(['projects'], (s) => s.put(p));
         return p;
       },
@@ -48,14 +48,21 @@ export async function createStore() {
     templates: {
       list: async () => (await read('templates', (s) => s.getAll())).sort(newest),
       get: async (id) => (await read('templates', (s) => s.get(id))) || null,
-      async add(file, { name, summary }, onProgress) {
+      async add(file, { name, summary, design }, onProgress) {
         const now = Date.now();
         const id = crypto.randomUUID();
-        const t = { id, name, fileName: file.name, size: file.size, storagePath: `local/${id}`, ...summary, schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
+        const t = { id, name, fileName: file.name, size: file.size, storagePath: `local/${id}`, ...summary, ...(design ? { design, designVersion: design.version } : {}), mode: 'preserve', schemaVersion: SCHEMA_VERSION, createdAt: now, updatedAt: now };
         const bytes = await file.arrayBuffer();
         await commit(['templates', 'files'], (ts, fs) => { ts.put(t); fs.put({ id, bytes }); });
         onProgress?.(1);
         return t;
+      },
+      async update(t, patch) { // design / designVersion / mode only; deliberately leaves updatedAt alone so library order is stable
+        const rec = await read('templates', (st) => st.get(t.id));
+        if (!rec) throw new Error('This template no longer exists.');
+        const next = { ...rec, ...patch };
+        await commit(['templates'], (st) => st.put(next));
+        return next;
       },
       async file(t) {
         const rec = await read('files', (s) => s.get(t.id));

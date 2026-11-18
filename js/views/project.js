@@ -1,5 +1,5 @@
 import { h } from '../lib/dom.js';
-import { ago, fmtBytes, plural, sizeLabel } from '../lib/format.js';
+import { ago, fmtBytes, MODE_LABEL, plural, sizeLabel } from '../lib/format.js';
 import { emptyState, loadInto, pageHeader } from '../ui/states.js';
 import { openPreview } from '../ui/preview.js';
 import { deleteProject } from './projects.js';
@@ -17,7 +17,7 @@ export function project(ctx, root, id) {
     document.title = `${p.name} · SlideFlow`;
     body.append(
       pageHeader({ title: p.name, sub: `Created ${ago(p.createdAt)}`, actions: [h('button', { class: 'btn btn-danger-quiet', type: 'button', onclick: async () => { if (await deleteProject(ctx, p)) location.hash = '#/projects'; } }, 'Delete project')] }),
-      h('section', { class: 'panel' }, h('h2', {}, 'Template'),
+      h('section', { class: 'panel' }, h('h2', {}, 'Template'), h('p', { class: 'muted' }, `Design mode: ${MODE_LABEL[p.mode || 'preserve']}`),
         t ? h('div', { class: 'split' },
           h('div', {}, h('strong', {}, t.name), h('p', { class: 'muted' }, `${plural(t.slideCount, 'slide')}, ${sizeLabel(t.width, t.height)}, ${fmtBytes(t.size)}`)),
           h('button', { class: 'btn', type: 'button', onclick: () => openPreview(ctx, t) }, 'Preview template'))

@@ -1,12 +1,12 @@
 {
   "name": "slideflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "SlideFlow Phase 1: dashboard, PPTX template management and parser. No build step.",
+  "description": "SlideFlow Phases 1-2: dashboard, PPTX templates, parser, template design analysis. No build step.",
   "scripts": {
     "start": "python3 -m http.server 8765",
-    "fixtures": "python3 tests/make_fixtures.py",
+    "fixtures": "python3 tests/make_fixtures.py && python3 tests/make_fixtures_p2.py",
     "test": "node tests/e2e.mjs"
   },
   "devDependencies": { "playwright": "^1.48.0" }

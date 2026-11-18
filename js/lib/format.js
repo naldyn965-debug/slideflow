@@ -22,3 +22,10 @@ export function sizeLabel(w, h) {
 
 export const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 export const stripExt = (name) => name.replace(/\.[^.]+$/, '');
+
+export const CLASS_LABEL = { title: 'Title', section: 'Section divider', text: 'Text', image: 'Image', comparison: 'Comparison', 'chart-table': 'Chart or table', closing: 'Closing', other: 'Other' };
+export const MODE_LABEL = { preserve: 'Preserve Design', enhance: 'Smart Enhance' };
+export const MODE_HELP = {
+  preserve: 'Keep the template exactly as it is: its fonts, sizes, colours and margins.',
+  enhance: 'Keep the template\'s identity, but lift sizes, margins and contrast to readable minimums.',
+};

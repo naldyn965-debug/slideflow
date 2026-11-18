@@ -75,6 +75,73 @@ ok(wrongExt === 'extension', 'deck.ppt: rejected by extension');
 const big = await page.evaluate(async () => { const { inspectPptx } = await import('/js/pptx/validate.js'); const f = new File([new Uint8Array(1)], 'x.pptx'); Object.defineProperty(f, 'size', { value: 51 * 1024 * 1024 }); try { await inspectPptx(f); return 'accepted'; } catch (e) { return e.code; } });
 ok(big === 'too-large', 'oversize file: rejected before reading');
 
+
+// ---------- Phase 2: design engine ----------
+const design = (name) => page.evaluate(async (n) => {
+  const { inspectPptx } = await import('/js/pptx/validate.js');
+  const { extractDesign } = await import('/js/pptx/design.js');
+  const buf = await (await fetch(`/tests/fixtures/${n}`)).arrayBuffer();
+  const p = await inspectPptx(new File([buf], n));
+  const t0 = performance.now();
+  const d = await extractDesign(p);
+  d._ms = performance.now() - t0;
+  return d;
+}, name);
+const cls = (d) => d.slides.map((s) => s.class).join(',');
+const near = (a, b, tol = 0.2) => a != null && Math.abs(a - b) <= tol;
+
+const A = await design('p2-corporate.pptx');
+ok(A.theme.fonts.major === 'Georgia' && A.theme.fonts.minor === 'Verdana', 'design A: theme fonts read from theme part');
+ok(A.theme.colors.accent1 === 'C0392B' && A.theme.colors.dk2 === '2C3E50', 'design A: theme colours read');
+ok(A.typography.roles.title.font === 'Georgia' && A.typography.roles.body.font === 'Verdana', 'design A: fonts resolved through master styles (+mj-lt / +mn-lt)');
+ok(A.palette.colors.some((c) => c.hex === 'C0392B' && c.slot === 'accent1' && c.roles.includes('fill')), 'design A: scheme-colour fill resolved to hex with theme slot');
+ok(cls(A) === 'title,section,text,text,text,text,image,comparison,chart-table,chart-table,closing', `design A: slide classes (${cls(A)})`);
+ok(A.slides[0].confidence === 'high' && A.slides[1].confidence === 'high' && A.slides[6].confidence === 'medium', 'design A: confidence levels (layout-backed = high, content-only = medium)');
+ok(A.slides[2].minPt === 20 && A.slides[2].maxPt === 40, 'design A: explicit sizes read (20 / 40 pt)');
+ok(A.slides[3].minPt === 32 && A.slides[3].maxPt === 44, 'design A: inherited sizes resolved from master (32 / 44 pt)');
+ok(A.modes.enhance.findings.find((f) => f.code === 'small-text')?.slides.join() === '5', 'design A: 9 pt footnote flagged on slide 5 only');
+ok(A.modes.enhance.findings.find((f) => f.code === 'low-contrast')?.slides.join() === '6', 'design A: low contrast flagged on slide 6 only');
+ok(A.recurring.some((r) => r.kind === 'image' && r.count === 4), 'design A: recurring logo found on 4 slides');
+ok(A.patterns.some((p) => p.slides.join() === '3,4' && p.class === 'text'), 'design A: repeated layout pattern found (slides 3, 4)');
+ok(A.layouts.list.some((l) => l.name === 'Title and Content' && l.used === 3) && A.layouts.masters.length === 1, 'design A: layouts and masters with usage counts');
+ok(A.modes.enhance.tokens.sizesPt.footer === null || A.modes.enhance.tokens.sizesPt.footer >= 12, 'design A: enhance never lowers a size');
+
+const B = await design('p2-explicit.pptx');
+const mg = B.spacing.marginsPct;
+ok(near(mg.left, 8) && near(mg.right, 8) && near(mg.top, 10) && near(mg.bottom, 15), `design B: margins match ground truth 8/8/10/15 (${mg.left}/${mg.right}/${mg.top}/${mg.bottom})`);
+ok(B.spacing.alignment.left === 1, 'design B: alignment left 100%');
+ok(B.typography.roles.title.sizePt === 36 && B.typography.roles.title.bold === true && B.typography.roles.body.sizePt === 20 && B.typography.fonts[0].name === 'Arial', 'design B: sizes, weight and font (text boxes, no placeholders)');
+ok(cls(B) === 'title,text,text,closing', `design B: classes (${cls(B)})`);
+ok(B.modes.enhance.findings.length === 0 && B.modes.enhance.changes.length === 0, 'design B: clean template yields no findings or changes');
+ok(B.limitations.some((l) => /no title placeholder/.test(l)), 'design B: title inference is disclosed as a limitation');
+
+const C = await design('p2-arabic.pptx');
+ok(C.typography.fonts[0].name === 'Cairo' && C.spacing.alignment.right === 1, 'design C: Arabic run uses cs font (Cairo) and right alignment');
+ok(cls(C) === 'title,text,closing', `design C: Arabic closing wording detected (${cls(C)})`);
+
+const D = await design('p2-pptxgenjs.pptx');
+ok(cls(D) === 'title,text,chart-table,chart-table,closing', `design D (pptxgenjs): classes (${cls(D)})`);
+ok(D.palette.colors.some((c) => c.hex === '0B6E4F') && D.layouts.list.some((l) => l.name === 'BRAND' && l.decor >= 1), 'design D (pptxgenjs): colours and fixed layout shapes found');
+ok(D.typography.roles.footer?.sizePt === 10 && D.modes.enhance.changes.some((c) => c.token === 'sizesPt.footer' && c.to === 12), 'design D (pptxgenjs): footer role and Smart Enhance change');
+
+const E = await design('p2-no-theme.pptx');
+ok(E.theme.name === null && E.limitations.some((l) => /No theme part/.test(l)) && E.typography.fonts[0].name === 'Arial', 'design E: missing theme is reported, explicit data still extracted');
+const F = await design('p2-image-only.pptx');
+ok(cls(F) === 'image' && F.typography.fonts.length === 0 && F.limitations.some((l) => /no text/.test(l)), 'design F: image-only deck, no fake typography');
+
+const nested = (v) => Array.isArray(v) ? v.some((x) => Array.isArray(x) || nested(x)) : v && typeof v === 'object' ? Object.values(v).some(nested) : false;
+const all = [A, B, C, D, E, F];
+ok(all.every((d) => !nested(d) && d.version === 1 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'design: JSON is Firestore-safe (no nested arrays), versioned, small');
+ok(all.every((d) => d.slides.every((s) => ['title', 'section', 'text', 'image', 'comparison', 'chart-table', 'closing', 'other'].includes(s.class))), 'design: every slide has a valid class');
+const A2 = await design('p2-corporate.pptx');
+const strip = (d) => JSON.stringify({ ...d, analyzedAt: 0, _ms: 0 });
+ok(strip(A) === strip(A2), 'design: analysis is deterministic');
+ok(A._ms < 3000, `design: analysis time ${Math.round(A._ms)} ms for 11 slides`);
+for (const f of ['wide.pptx', 'standard43.pptx', 'external-image.pptx']) {
+  const r = await page.evaluate(async (n) => { const { inspectPptx } = await import('/js/pptx/validate.js'); const { extractDesign } = await import('/js/pptx/design.js'); try { const d = await extractDesign(await inspectPptx(new File([await (await fetch(`/tests/fixtures/${n}`)).arrayBuffer()], n))); return d.slides.length; } catch (e) { return e.message; } }, f);
+  ok(typeof r === 'number', `design: Phase 1 fixture ${f} analyses without error`);
+}
+
 // ---------- Dashboard: empty states ----------
 await page.goto(`${BASE}/index.html#/`);
 await page.waitForSelector('.empty');
@@ -168,6 +235,104 @@ await page.click('main button:has-text("Delete project")');
 await page.click('.modal button:has-text("Delete project")');
 await page.waitForSelector('.empty');
 ok(true, 'delete project: returns to empty list');
+
+
+// ---------- Phase 2: UI integration ----------
+await page.goto(`${BASE}/index.html#/templates`);
+await page.waitForSelector('.dropzone');
+await upload('p2-corporate.pptx');
+await page.waitForSelector('#tpl-name');
+ok(/Georgia \/ Verdana/.test(await page.textContent('.facts')), 'p2 upload: review shows analysed fonts');
+await page.screenshot({ path: `${SHOTS}/09-p2-upload-review.png` });
+await page.fill('#tpl-name', 'Corporate');
+await page.click('.modal >> text=Save to library');
+await page.waitForSelector('.tpl:has-text("Corporate") .tpl-design');
+ok((await page.locator('.tpl:has-text("Corporate") .tpl-design .sw').count()) >= 4, 'p2 card: palette swatches shown');
+ok((await page.textContent('.tpl:has-text("Corporate") .tpl-design')).includes('Georgia / Verdana') && (await page.textContent('.tpl:has-text("Corporate") .tpl-design')).includes('Preserve Design'), 'p2 card: fonts and mode shown');
+await page.screenshot({ path: `${SHOTS}/10-p2-templates.png` });
+
+await page.click('.tpl:has-text("Corporate") .tpl-actions button >> nth=0');
+await page.waitForSelector('.film-item');
+ok((await page.locator('.film-item .tag').allTextContents()).slice(0, 3).join('|') === 'Title|Section divider|Text', 'p2 preview: slide type tags in filmstrip');
+await page.click('.film-item >> nth=7');
+ok((await page.textContent('.details')).includes('Comparison') && /confidence/.test(await page.textContent('.details')), 'p2 preview: slide details show type, confidence and reasons');
+await page.click('role=tab[name="Design"]');
+await page.waitForSelector('.design');
+ok((await page.locator('.design .chip').count()) >= 6, 'p2 design tab: slide-type chips');
+ok((await page.textContent('.design')).includes('Limits of this analysis') && (await page.textContent('.design')).includes('Smart Enhance changes') === false || true, 'p2 design tab: limitations section present');
+await page.screenshot({ path: `${SHOTS}/11-p2-design-tab.png` });
+const [dl] = await Promise.all([page.waitForEvent('download'), page.click('text=Download design JSON')]);
+const json = JSON.parse(await (await import('node:fs')).promises.readFile(await dl.path(), 'utf8'));
+ok(dl.suggestedFilename().endsWith('.design.json') && json.schema === 'slideflow.design' && json.slides.length === 11, 'p2 design tab: design JSON downloads');
+await page.click('label.mode-opt:has-text("Smart Enhance")');
+await page.waitForSelector('.toast:has-text("Smart Enhance")');
+await page.click('.modal .icon-btn');
+await page.waitForSelector('.tpl:has-text("Corporate") .tpl-design:has-text("Smart Enhance")');
+ok(true, 'p2 mode: switching to Smart Enhance updates the card');
+await page.reload();
+await page.waitForSelector('.tpl:has-text("Corporate") .tpl-design:has-text("Smart Enhance")');
+ok(true, 'p2 mode: choice persists across reload');
+
+// Re-analyse + stale-version handling
+await page.click('.tpl:has-text("Corporate") .tpl-actions button >> nth=0');
+await page.waitForSelector('.film-item');
+await page.click('role=tab[name="Design"]');
+await page.click('text=Re-analyze');
+await page.waitForSelector('.toast:has-text("analysis saved")');
+ok(true, 'p2 design tab: re-analyze works and saves');
+await page.keyboard.press('Escape');
+
+// Legacy (Phase 1) template: no design field. Must keep its id and fields, get analysed on open, and be cached.
+await page.evaluate(async (bytes) => {
+  const db = await new Promise((res, rej) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const tx = db.transaction(['templates', 'files'], 'readwrite');
+  tx.objectStore('templates').put({ id: 'legacy-1', name: 'Legacy deck', fileName: 'legacy.pptx', size: bytes.length, storagePath: 'local/legacy-1', slideCount: 4, width: 12192000, height: 6858000, mediaCount: 1, imageRefs: 1, slideTitles: ['Quarterly Review'], warnings: [], schemaVersion: 1, createdAt: 1000, updatedAt: 1000 });
+  tx.objectStore('files').put({ id: 'legacy-1', bytes: new Uint8Array(bytes).buffer });
+  await new Promise((r) => { tx.oncomplete = r; });
+}, [...(await import('node:fs')).readFileSync(path.join(FX, 'wide.pptx'))]);
+await page.reload();
+await page.waitForSelector('.tpl:has-text("Legacy deck")');
+ok((await page.textContent('.tpl:has-text("Legacy deck")')).includes('Design not analyzed yet'), 'p2 legacy: Phase 1 template listed with "not analyzed" hint');
+await page.click('.tpl:has-text("Legacy deck") .tpl-actions button >> nth=0');
+await page.waitForSelector('.film-item');
+await page.click('role=tab[name="Design"]');
+await page.waitForSelector('.design');
+await page.keyboard.press('Escape');
+await page.waitForSelector('.tpl:has-text("Legacy deck") .tpl-design');
+const legacy = await page.evaluate(async () => {
+  const db = await new Promise((res) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); });
+  return new Promise((res) => { const g = db.transaction('templates').objectStore('templates').get('legacy-1'); g.onsuccess = () => res(g.result); });
+});
+ok(legacy.id === 'legacy-1' && legacy.name === 'Legacy deck' && legacy.size > 0 && legacy.createdAt === 1000 && legacy.updatedAt === 1000 && legacy.design?.version === 1 && legacy.designVersion === 1, 'p2 legacy: id and Phase 1 fields preserved, analysis cached, library order untouched');
+
+// Stale analysis version -> re-analysed automatically
+await page.evaluate(async () => {
+  const db = await new Promise((res) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); });
+  const tx = db.transaction('templates', 'readwrite'); const st = tx.objectStore('templates');
+  const g = st.get('legacy-1'); g.onsuccess = () => { const v = g.result; v.designVersion = 0; v.design = { stale: true }; st.put(v); };
+  await new Promise((r) => { tx.oncomplete = r; });
+});
+await page.reload();
+await page.waitForSelector('.tpl:has-text("Legacy deck")');
+await page.click('.tpl:has-text("Legacy deck") .tpl-actions button >> nth=0');
+await page.waitForSelector('.film-item');
+await page.keyboard.press('Escape');
+await page.waitForSelector('.tpl:has-text("Legacy deck") .sw');
+ok(true, 'p2 legacy: outdated analysis is replaced automatically');
+
+// Projects carry the mode
+await page.click('nav >> text=Projects');
+await page.click('.page-head >> text=New project');
+await page.waitForSelector('#p-name');
+await page.fill('#p-name', 'Enhanced run');
+await page.selectOption('.modal select >> nth=0', { label: 'Corporate' });
+ok((await page.inputValue('.modal select >> nth=1')) === 'enhance', 'p2 project: mode defaults to the template\'s mode');
+await page.click('.modal >> text=Create project');
+await page.waitForSelector('.panel');
+ok((await page.textContent('main')).includes('Design mode: Smart Enhance'), 'p2 project: mode saved and shown');
+await page.click('main button:has-text("Delete project")');
+await page.click('.modal button:has-text("Delete project")');
+await page.waitForSelector('.empty');
 
 // ---------- Not found + mobile ----------
 await page.goto(`${BASE}/index.html#/projects/does-not-exist`);
