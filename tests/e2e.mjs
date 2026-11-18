@@ -129,9 +129,15 @@ ok(E.theme.name === null && E.limitations.some((l) => /No theme part/.test(l)) &
 const F = await design('p2-image-only.pptx');
 ok(cls(F) === 'image' && F.typography.fonts.length === 0 && F.limitations.some((l) => /no text/.test(l)), 'design F: image-only deck, no fake typography');
 
+// Phase 2.1: dark template with full-slide pictures, bleed shapes and a colour-map override (see tests/make_fixture_p21.py)
+const G = await design('p21-dark-clrmap-explicit-bg.pptx');
+ok(G.modes.enhance.findings.find((f) => f.code === 'low-contrast')?.slides.join() === '8', 'p21 design: white-on-dark text is no longer flagged; only the genuinely unreadable slide 8 is');
+ok(G.slides.every((s) => s.colorMap === 'slide') && G.modes.preserve.tokens.colors.text === 'FFFFFF', 'p21 design: slide-level colour-map override applied (tx1 resolves to white)');
+ok(G.slides[0].class === 'title' && G.slides[14].class === 'closing' && G.slides[10].class === 'text', `p21 design: full-slide pictures do not make cover, closing or text slides "image" (${cls(G)})`);
+ok(!G.slides.some((s) => s.bounds && Object.values(s.bounds).some((v) => v < 0)) && G.spacing.bleedSlides === 6, 'p21 design: bleed shapes never produce negative margins');
 const nested = (v) => Array.isArray(v) ? v.some((x) => Array.isArray(x) || nested(x)) : v && typeof v === 'object' ? Object.values(v).some(nested) : false;
-const all = [A, B, C, D, E, F];
-ok(all.every((d) => !nested(d) && d.version === 1 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'design: JSON is Firestore-safe (no nested arrays), versioned, small');
+const all = [A, B, C, D, E, F, G];
+ok(all.every((d) => !nested(d) && d.version === 2 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'design: JSON is Firestore-safe (no nested arrays), versioned, small');
 ok(all.every((d) => d.slides.every((s) => ['title', 'section', 'text', 'image', 'comparison', 'chart-table', 'closing', 'other'].includes(s.class))), 'design: every slide has a valid class');
 const A2 = await design('p2-corporate.pptx');
 const strip = (d) => JSON.stringify({ ...d, analyzedAt: 0, _ms: 0 });
@@ -303,7 +309,7 @@ const legacy = await page.evaluate(async () => {
   const db = await new Promise((res) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); });
   return new Promise((res) => { const g = db.transaction('templates').objectStore('templates').get('legacy-1'); g.onsuccess = () => res(g.result); });
 });
-ok(legacy.id === 'legacy-1' && legacy.name === 'Legacy deck' && legacy.size > 0 && legacy.createdAt === 1000 && legacy.updatedAt === 1000 && legacy.design?.version === 1 && legacy.designVersion === 1, 'p2 legacy: id and Phase 1 fields preserved, analysis cached, library order untouched');
+ok(legacy.id === 'legacy-1' && legacy.name === 'Legacy deck' && legacy.size > 0 && legacy.createdAt === 1000 && legacy.updatedAt === 1000 && legacy.design?.version === 2 && legacy.designVersion === 2, 'p2 legacy: id and Phase 1 fields preserved, analysis cached, library order untouched');
 
 // Stale analysis version -> re-analysed automatically
 await page.evaluate(async () => {

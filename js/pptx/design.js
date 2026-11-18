@@ -3,7 +3,8 @@
 // stated rules with a confidence. Anything that cannot be resolved is reported in `limitations`, never guessed.
 import { kid, kids, desc, readXml, readRels, xfrmOf, intoGroup, placeholderOf, normType } from './parser.js';
 
-export const DESIGN_VERSION = 1;
+// v2 (Phase 2.1): colour-map overrides, per-shape backdrops for contrast, bleed-aware margins, background-aware classification.
+export const DESIGN_VERSION = 2;
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const FOOTER = new Set(['dt', 'ftr', 'sldNum']);
 const DEFAULT_CLRMAP = { bg1: 'lt1', tx1: 'dk1', bg2: 'lt2', tx2: 'dk2' };
@@ -41,6 +42,16 @@ function lumTransform(hex, mod, off) {
 const relLum = (hex) => { const [r, g, b] = toRgb(hex).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
 export const contrast = (a, b) => { const x = relLum(a); const y = relLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
 const isNeutral = (hex) => { const c = toRgb(hex); return Math.max(...c) - Math.min(...c) < 30; };
+/** `top` colour at `alpha` painted over `under` (both hex). */
+const over = (top, alpha, under) => (alpha == null || alpha >= 1 ? top : toHex(toRgb(top).map((v, k) => v * alpha + toRgb(under)[k] * (1 - alpha))));
+/** `<p:clrMapOvr><a:overrideClrMapping .../>` on a slide or layout. null = inherit (`masterClrMapping`). This is how PowerPoint stores dark background styles. */
+function clrMapOf(doc) {
+  const o = doc && desc(doc, 'overrideClrMapping')[0];
+  if (!o) return null;
+  const m = {}; for (const a of o.attributes) m[a.name] = a.value;
+  return m;
+}
+const hidesMasterShapes = (doc) => /^(0|false)$/.test(doc?.documentElement.getAttribute('showMasterSp') || '');
 
 /** First colour child of `holder` (solidFill, gradient stop, bgRef...). Applies lumMod/lumOff only. */
 function colorOf(holder, cx) {
@@ -53,14 +64,15 @@ function colorOf(holder, cx) {
   else { const v = c.getAttribute('val'); if (v === 'phClr') return null; slot = cx.clrMap[v] || v; hex = cx.theme.colors[slot]; }
   if (!/^[0-9a-f]{6}$/i.test(hex || '')) return null;
   hex = hex.toUpperCase();
-  let mod = 1; let off = 0; const approx = [];
+  let mod = 1; let off = 0; let alpha = 1; const approx = [];
   for (const m of c.children) {
-    if (m.localName === 'lumMod') mod = Number(m.getAttribute('val')) / 100000;
+    if (m.localName === 'alpha') alpha = Math.min(1, Math.max(0, Number(m.getAttribute('val')) / 100000));
+    else if (m.localName === 'lumMod') mod = Number(m.getAttribute('val')) / 100000;
     else if (m.localName === 'lumOff') off = Number(m.getAttribute('val')) / 100000;
     else if (['tint', 'shade', 'satMod', 'hueMod'].includes(m.localName)) approx.push(m.localName);
   }
   if (mod !== 1 || off) hex = lumTransform(hex, mod, off);
-  return { hex, slot, approx: approx.length ? approx : undefined };
+  return { hex, slot, alpha: alpha < 1 ? alpha : undefined, approx: approx.length ? approx : undefined };
 }
 
 // ---------- theme / master / layout ----------
@@ -86,7 +98,7 @@ async function readTheme(zip, rels) {
 
 function fillOf(holder, cx, rels, env) {
   for (const el of holder ? holder.children : []) {
-    if (el.localName === 'solidFill') { const c = colorOf(el, cx); return { type: 'solid', hex: c?.hex || null, slot: c?.slot || null, approx: c?.approx }; }
+    if (el.localName === 'solidFill') { const c = colorOf(el, cx); return { type: 'solid', hex: c?.hex || null, slot: c?.slot || null, alpha: c?.alpha, approx: c?.approx }; }
     if (el.localName === 'gradFill') { const stops = desc(el, 'gs').map((g) => colorOf(g, cx)?.hex).filter(Boolean); return { type: 'gradient', stops: stops.slice(0, 4), hex: null }; }
     if (el.localName === 'blipFill') { const b = desc(el, 'blip')[0]; const r = b && rels?.get(b.getAttributeNS(NS_R, 'embed')); return { type: 'image', target: r?.target || null }; }
     if (el.localName === 'noFill') return { type: 'none' };
@@ -111,7 +123,7 @@ async function loadMaster(zip, path, env) {
   const doc = await readXml(zip, path);
   const rels = await readRels(zip, path);
   const theme = await readTheme(zip, rels);
-  const m = { path, doc, rels, theme, clrMap: { ...DEFAULT_CLRMAP }, styles: {}, bg: null, decor: [], layoutCount: 0 };
+  const m = { path, doc, rels, theme, clrMap: { ...DEFAULT_CLRMAP }, styles: {}, decor: [], layoutCount: 0 };
   m.cx = { theme, clrMap: m.clrMap };
   env.masters.set(path, m);
   if (!doc) return m;
@@ -119,7 +131,6 @@ async function loadMaster(zip, path, env) {
   for (const a of cm ? cm.attributes : []) m.clrMap[a.name] = a.value;
   const tx = desc(doc, 'txStyles')[0];
   for (const n of ['titleStyle', 'bodyStyle', 'otherStyle']) m.styles[n] = kid(tx, n);
-  m.bg = readBg(doc, m.cx, rels, env);
   m.decor = decorOf(doc, { ...env, cx: m.cx, rels, layoutDoc: null, master: m });
   return m;
 }
@@ -129,14 +140,13 @@ async function loadLayout(zip, path, env) {
   const rels = await readRels(zip, path);
   const mRel = [...rels.values()].find((r) => r.kind === 'slideMaster');
   const master = mRel ? await loadMaster(zip, mRel.target, env) : null;
-  const L = { path, doc, rels, master, used: 0, name: null, type: null, bg: null, decor: [], phs: [] };
+  const L = { path, doc, rels, master, used: 0, name: null, type: null, clrOvr: null, decor: [], phs: [] };
   env.layouts.set(path, L);
   if (!doc) return L;
   L.name = desc(doc, 'cSld')[0]?.getAttribute('name') || null;
   L.type = doc.documentElement.getAttribute('type');
-  if (desc(doc, 'overrideClrMapping').length) env.stats.clrOverride = true;
+  L.clrOvr = clrMapOf(doc);
   if (master) {
-    L.bg = readBg(doc, master.cx, rels, env);
     L.decor = decorOf(doc, { ...env, cx: master.cx, rels, layoutDoc: null, master });
     for (const sp of desc(doc, 'sp')) {
       const ph = placeholderOf(sp);
@@ -162,7 +172,7 @@ function fontName(face, theme) {
   if (!m) return face || null;
   return theme.fonts[m[1] === 'mj' ? 'major' : 'minor']?.[{ lt: 'latin', ea: 'ea', cs: 'cs' }[m[2]]] || null;
 }
-function runStyle(rPr, lvl, chain, env, rtl, scale) {
+function runStyle(rPr, lvl, chain, env, rtl, scale, fontCol, shapeLayers) {
   const layers = [rPr, ...chain.map((c) => kid(kids(c, `lvl${lvl}pPr`)[0], 'defRPr'))];
   const pick = (f) => { for (let i = 0; i < layers.length; i++) { const v = layers[i] && f(layers[i]); if (v != null) return [v, i]; } return [null, -1]; };
   const flag = (a) => (l) => (l.hasAttribute(a) ? /^(1|true)$/.test(l.getAttribute(a)) : null);
@@ -170,11 +180,17 @@ function runStyle(rPr, lvl, chain, env, rtl, scale) {
   const [b] = pick(flag('b'));
   const [i] = pick(flag('i'));
   const [face] = pick((l) => kid(l, rtl ? 'cs' : 'latin')?.getAttribute('typeface') || null);
-  const [col] = pick((l) => { const f = kid(l, 'solidFill'); return f ? colorOf(f, env.cx) : null; });
+  // Colour precedence: run, shape list style, then the shape's <p:style><a:fontRef> colour (white text on dark autoshapes), then layout/master/defaults.
+  let col = null;
+  for (let k = 0; k < layers.length && !col; k++) {
+    if (k === 1 + shapeLayers && fontCol) col = fontCol;
+    else { const f = layers[k] && kid(layers[k], 'solidFill'); col = f ? colorOf(f, env.cx) : null; }
+  }
+  if (!col && fontCol && layers.length <= 1 + shapeLayers) col = fontCol;
   const theme = env.cx.theme;
   const font = fontName(face, theme) || (rtl ? theme.fonts.minor?.cs || theme.fonts.minor?.arab : null) || theme.fonts.minor?.latin || null;
   const auto = col || colorOf({ children: [{ localName: 'schemeClr', getAttribute: () => 'tx1', children: [] }] }, env.cx);
-  return { sz: szRaw ? r1((Number(szRaw) / 100) * scale) : 18, src: szI === 0 ? 'explicit' : szI > 0 ? 'inherited' : 'default', b: !!b, i: !!i, font, hex: auto?.hex || null, slot: col ? col.slot : 'tx1', approx: auto?.approx };
+  return { sz: szRaw ? r1((Number(szRaw) / 100) * scale) : 18, src: szI === 0 ? 'explicit' : szI > 0 ? 'inherited' : 'default', b: !!b, i: !!i, font, hex: auto?.hex || null, alpha: auto?.alpha, slot: col ? col.slot : 'tx1', approx: auto?.approx };
 }
 function alignOf(pPr, lvl, chain) {
   const a = pPr?.getAttribute('algn') || chain.map((c) => kids(c, `lvl${lvl}pPr`)[0]?.getAttribute('algn')).find(Boolean) || 'l';
@@ -191,6 +207,9 @@ function readText(el, ph, lay, mas, env) {
   const role = !ph ? 'body' : t === 'title' ? 'title' : ph.type === 'subTitle' ? 'subtitle' : FOOTER.has(ph.type) ? 'footer' : 'body';
   const chain = [kid(body, 'lstStyle'), lay && kid(kid(lay, 'txBody'), 'lstStyle'), mas && kid(kid(mas, 'txBody'), 'lstStyle'), env.master?.styles[group], env.defaultTextStyle].filter(Boolean);
   const merged = new Map(); const lines = []; const algn = {};
+  const fontRef = kid(kid(el, 'style'), 'fontRef');
+  const fontCol = fontRef ? colorOf(fontRef, env.cx) : null;
+  const shapeLayers = kid(body, 'lstStyle') ? 1 : 0;
   for (const p of kids(body, 'p')) {
     const pPr = kid(p, 'pPr');
     const lvl = (Number(pPr?.getAttribute('lvl')) || 0) + 1;
@@ -199,8 +218,8 @@ function readText(el, ph, lay, mas, env) {
       const txt = kid(r, 't')?.textContent || '';
       line += txt;
       if (!txt.trim()) continue;
-      const s = runStyle(kid(r, 'rPr'), lvl, chain, env, RTL.test(txt), scale);
-      const key = [s.sz, s.b, s.i, s.font, s.hex, s.src, s.approx].join('|');
+      const s = runStyle(kid(r, 'rPr'), lvl, chain, env, RTL.test(txt), scale, fontCol, shapeLayers);
+      const key = [s.sz, s.b, s.i, s.font, s.hex, s.alpha, s.src, s.approx].join('|');
       const m = merged.get(key) || { ...s, chars: 0 };
       m.chars += txt.length;
       merged.set(key, m);
@@ -258,9 +277,83 @@ function decorOf(doc, env) {
 }
 const pctBox = (b, W, H) => ({ x: r1((b.x / W) * 100), y: r1((b.y / H) * 100), w: r1((b.w / W) * 100), h: r1((b.h / H) * 100) });
 
+// ---------- geometry roles and backdrops (Phase 2.1) ----------
+const EDGE = 0.005; // within 0.5% of the slide edge counts as touching it
+/**
+ * What a shape is for, so that decoration never distorts margins or slide classes:
+ *   background  non-text picture/panel covering (almost) the whole slide
+ *   bleed       non-text shape running off the slide (any shape) or a picture touching an edge: intentional, not a margin
+ *   content     everything the reader is meant to see (text always counts, with its box clipped to the slide)
+ *   footer / offslide
+ * Also records which edges a bleed shape reaches (`edges`).
+ */
+function roleOf(sh, W, H) {
+  const b = sh.box;
+  if (!b) return { role: null, edges: [] };
+  if (FOOTER.has(sh.phRaw)) return { role: 'footer', edges: [] };
+  const x0 = Math.max(0, b.x); const y0 = Math.max(0, b.y); const x1 = Math.min(W, b.x + b.w); const y1 = Math.min(H, b.y + b.h);
+  if (x1 <= x0 || y1 <= y0) return { role: 'offslide', edges: [] };
+  const crosses = { left: b.x < -EDGE * W, right: b.x + b.w > W * (1 + EDGE), top: b.y < -EDGE * H, bottom: b.y + b.h > H * (1 + EDGE) };
+  const touches = { left: b.x <= EDGE * W, right: b.x + b.w >= W * (1 - EDGE), top: b.y <= EDGE * H, bottom: b.y + b.h >= H * (1 - EDGE) };
+  const pic = sh.kind === 'image' || sh.fill?.type === 'image';
+  if (sh.words > 0) return { role: 'content', edges: Object.keys(crosses).filter((k) => crosses[k]), text: true };
+  if ((x1 - x0) >= 0.95 * W && (y1 - y0) >= 0.95 * H) return { role: 'background', edges: [] };
+  const edges = Object.keys(crosses).filter((k) => crosses[k] || (pic && touches[k]));
+  return { role: edges.length ? 'bleed' : 'content', edges };
+}
+
+/** Raw shape records of a master or layout under the colour map of the slide being analysed (cached per map). */
+function layerRecs(part, env, cx) {
+  const key = `${part.path}|${JSON.stringify(cx.clrMap)}`;
+  if (!env.layerCache.has(key)) {
+    const out = [];
+    if (part.doc) walkTree(desc(part.doc, 'spTree')[0], (b) => b, { ...env, cx, rels: part.rels, layoutDoc: null, master: part.master || part }, out);
+    env.layerCache.set(key, out);
+  }
+  return env.layerCache.get(key);
+}
+
+const RECTLIKE = /^(rect|roundRect|round[12]SameRect|round2DiagRect|snip[12]?Rect|snip2SameRect|snipRoundRect|flowChartProcess)$/;
+const overlap = (a, b) => {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x); const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 && a.w > 0 && a.h > 0 ? (w * h) / (a.w * a.h) : 0;
+};
+/**
+ * What a text shape is actually painted on: the slide background, then every shape beneath it (master, layout, earlier slide shapes,
+ * its own fill) that overlaps it, composited in z-order with alpha. Returns candidate backdrop colours, or `hexes: null` with a
+ * reason when the backdrop cannot be a single known colour (picture, gradient, effect fill). Partial overlaps and non-rectangular
+ * shapes add a candidate instead of replacing the backdrop; contrast is only flagged when the text fails against every candidate,
+ * so uncertainty never produces a false alarm.
+ */
+function backdropOf(sh, below, base) {
+  let cand = base.hex ? [base.hex] : null;
+  let reason = base.hex ? null : `${base.type === 'none' ? 'unknown' : base.type} slide background`;
+  if (!sh.box) return { hexes: cand, reason };
+  for (const l of [...below, sh]) {
+    if (!l.box) continue;
+    const cov = overlap(sh.box, l.box);
+    if (cov < 0.05) continue;
+    const f = l.fill; const pic = l.kind === 'image';
+    if (!pic && (!f || f.type === 'none')) continue;
+    if (pic || f.type === 'image' || f.type === 'gradient' || f.type !== 'solid' || !f.hex) {
+      if (cov >= 0.2) { cand = null; reason = pic || f.type === 'image' ? 'picture behind the text' : 'gradient or effect fill behind the text'; }
+      continue;
+    }
+    const a = f.alpha ?? 1;
+    if (a < 0.05) continue;
+    const full = l === sh || (cov >= 0.5 && (!l.geom || RECTLIKE.test(l.geom)));
+    if (cand === null) { if (full && a >= 0.95) { cand = [f.hex]; reason = null; } continue; }
+    const mix = cand.map((c) => over(f.hex, a, c));
+    cand = [...new Set(full ? mix : [...cand, ...mix])].slice(0, 6);
+  }
+  return { hexes: cand, reason };
+}
+
 // ---------- classification ----------
 const KW_CLOSE = /\b(thank(s| you)|questions?\??|q\s*&\s*a|get in touch|contact( us)?|the end)\b|شكر|أسئلة|اسئلة|تواصل/i;
 const KW_COMPARE = /\b(vs\.?|versus|compar(e|ed|ison)|before\s*(and|&|\/)\s*after|pros\s*(and|&)\s*cons)\b|مقارنة|مقابل/i;
+const KW_TITLE_NAME = /\b(title slide|cover|front page)\b/i;
+const KW_CLOSE_NAME = /\b(thank|closing|end slide|the end|contact|q\s*&\s*a|goodbye)\b/i;
 const TWO_COL_TYPES = ['twoObj', 'twoColTx', 'twoObjAndObj', 'twoObjAndTx', 'txAndTwoObj'];
 const IMG_TYPES = ['picTx', 'txAndClipArt', 'clipArtAndTx', 'txAndMedia', 'mediaAndTx'];
 
@@ -270,15 +363,21 @@ function inferTitle(shapes, H) {
   if (shapes.some((s) => s.ph === 'title')) return false;
   const c = shapes.filter((s) => s.kind === 'text' && !FOOTER.has(s.phRaw) && s.box && s.runs.length)
     .map((s) => ({ s, sz: Math.max(...s.runs.map((r) => r.sz)) }));
-  if (c.length < 2) return false;
+  if (!c.length) return false;
   c.sort((a, b) => b.sz - a.sz);
-  if (c[0].sz <= c[1].sz || c[0].s.box.y > H * 0.5) return false;
+  if (c.length === 1) { if (c[0].sz < 28 || c[0].s.box.y > H * 0.65) return false; } // a lone large text box is a title (divider slides)
+  else if (c[0].sz <= c[1].sz || c[0].s.box.y > H * 0.5) return false;
   c[0].s.titleLike = true; c[0].s.role = 'title';
   return true;
 }
 
 function features(shapes, bg, layout, W, H) {
   const A = W * H;
+  const clipA = (s) => { if (!s.box) return 0; const w = Math.min(W, s.box.x + s.box.w) - Math.max(0, s.box.x); const h = Math.min(H, s.box.y + s.box.h) - Math.max(0, s.box.y); return w > 0 && h > 0 ? w * h : 0; };
+  // A picture covering the whole slide is the slide's background, not image content: it must not turn a cover, text or closing slide into an "image" slide.
+  const pics = shapes.filter((s) => s.kind === 'image' && s.layoutRole !== 'offslide');
+  const backdrops = pics.filter((s) => s.layoutRole === 'background');
+  const contentPics = pics.filter((s) => s.layoutRole !== 'background');
   const body = shapes.filter((s) => s.kind === 'text' && !FOOTER.has(s.phRaw));
   const blocks = body.filter((s) => !isTitle(s));
   const area = (s) => (s.box ? Math.min(A, Math.max(0, s.box.w) * Math.max(0, s.box.h)) : 0);
@@ -294,35 +393,47 @@ function features(shapes, bg, layout, W, H) {
   return {
     layoutType: layout?.type || null, layoutName: layout?.name || '',
     words: body.reduce((n, s) => n + s.words, 0), textBlocks: blocks.length,
-    images: shapes.filter((s) => s.kind === 'image').length,
-    imageCoverage: Math.min(1, shapes.filter((s) => s.kind === 'image').reduce((n, s) => n + area(s), 0) / A),
-    bgImage: bg?.type === 'image',
+    images: pics.length, contentImages: contentPics.length,
+    imageCoverage: Math.min(1, pics.reduce((n, s) => n + clipA(s), 0) / A),
+    contentCoverage: Math.min(1, contentPics.reduce((n, s) => n + clipA(s), 0) / A),
+    backdropImage: bg?.type === 'image' || backdrops.length > 0,
+    backdropTarget: backdrops[0]?.image?.target || (bg?.type === 'image' ? bg.target : null) || null,
     tables: shapes.filter((s) => s.kind === 'table').length, charts: shapes.filter((s) => s.kind === 'chart').length,
     chartArea: Math.min(1, shapes.filter((s) => s.kind === 'chart' || s.kind === 'table').reduce((n, s) => n + area(s), 0) / A),
     hasCtrTitle: shapes.some((s) => s.phRaw === 'ctrTitle'), hasTitle: shapes.some(isTitle), hasBody: shapes.some((s) => s.ph === 'body'),
     columns: inCols.size, closingKw: KW_CLOSE.test(text), compareKw: KW_COMPARE.test(title) || KW_COMPARE.test(text.slice(0, 200)),
   };
 }
-function classify(f, i, n) {
+function classify(f, i, n, cover) {
   const L = f.layoutType; const N = f.layoutName;
-  const out = (c, confidence, ...reasons) => ({ class: c, confidence, reasons });
+  const out = (c, confidence, ...reasons) => ({ class: c, confidence, reasons: reasons.filter(Boolean) });
   const pc = (v) => `${Math.round(v * 100)}%`;
+  const onPic = f.backdropImage ? 'text sits on a full-slide picture, treated as the background' : null;
   if ((f.charts || f.tables) && (f.chartArea >= 0.2 || f.words <= 60 || ['tbl', 'chart', 'txAndChart', 'chartAndTx'].includes(L)))
     return out('chart-table', f.chartArea >= 0.2 ? 'high' : 'medium', f.charts ? `${f.charts} chart object(s)` : `${f.tables} table(s)`, `covers ${pc(f.chartArea)} of the slide`);
-  if (i === 0 && (f.hasCtrTitle || L === 'title' || (f.words >= 1 && f.words <= 30 && f.textBlocks <= 3 && f.imageCoverage < 0.5)))
-    return out('title', f.hasCtrTitle || L === 'title' ? 'high' : 'medium', f.hasCtrTitle || L === 'title' ? 'title layout / centred-title placeholder' : 'first slide with little text', 'first slide');
-  if (i >= n - 2 && i > 0 && f.closingKw && f.words <= 40) return out('closing', 'high', 'closing wording found (thanks, questions, contact)', i === n - 1 ? 'last slide' : 'second-to-last slide');
+  // First slide: position and wording decide, never picture coverage (covers are often one big photo).
+  const titleLayout = f.hasCtrTitle || L === 'title' || KW_TITLE_NAME.test(N);
+  if (i === 0 && (titleLayout || (f.words >= 1 && f.words <= 30 && f.textBlocks <= 3 && f.contentCoverage < 0.5) || (n > 1 && f.words === 0 && f.backdropImage && f.contentImages === 0)))
+    return out('title', titleLayout ? 'high' : 'medium', titleLayout ? 'title layout / centred-title placeholder' : f.words ? 'first slide with little text' : 'first slide that is only a full-slide picture', 'first slide', onPic);
+  const closeLayout = KW_CLOSE_NAME.test(N);
+  if (i >= n - 2 && i > 0 && (f.closingKw || closeLayout) && f.words <= 40) return out('closing', 'high', closeLayout && !f.closingKw ? `layout name "${N}"` : 'closing wording found (thanks, questions, contact)', i === n - 1 ? 'last slide' : 'second-to-last slide', onPic);
   if (i === n - 1 && n > 2 && f.words <= 15 && (L === 'title' || f.hasCtrTitle || L === 'secHead')) return out('closing', 'medium', 'last slide using a title-style layout with little text');
+  // Last slide framed like a cover: a full-slide picture, little text, nothing else.
+  if (i === n - 1 && n > 2 && f.backdropImage && f.contentImages === 0 && f.words <= 25 && !f.columns && !f.tables && !f.charts) {
+    const same = f.backdropTarget && f.backdropTarget === cover?.backdropTarget;
+    return out('closing', same || cover?.backdropImage ? 'high' : 'medium', 'last slide with a full-slide picture and little text', same ? 'uses the same background picture as the first slide' : cover?.backdropImage ? 'mirrors the first slide\'s full-slide picture' : null, onPic);
+  }
   if (i > 0 && (L === 'secHead' || /section|divider|chapter/i.test(N))) return out('section', L === 'secHead' ? 'high' : 'medium', L === 'secHead' ? 'section-header layout' : `layout name "${N}"`);
-  if (i > 0 && i < n - 1 && f.hasTitle && f.words <= 10 && f.textBlocks <= 1 && f.images === 0 && !f.bgImage)
-    return out('section', 'medium', `title with only ${f.words} words and no pictures`);
+  if (i > 0 && i < n - 1 && f.hasTitle && f.words <= 10 && f.textBlocks <= 1 && f.contentImages === 0)
+    return out('section', 'medium', `title with only ${f.words} words and no content pictures`, onPic);
   if (f.columns >= 2) {
     const strong = f.compareKw || L === 'twoTxTwoObj' || /compar/i.test(N);
     return out('comparison', strong ? 'high' : 'medium', `${f.columns} side-by-side text blocks`, strong ? 'comparison wording or layout' : 'two-column text without comparison wording');
   }
-  if (f.imageCoverage >= 0.3 || (f.bgImage && f.words <= 40)) return out('image', f.imageCoverage >= 0.5 || f.bgImage ? 'high' : 'medium', f.bgImage ? 'full-slide background image' : `pictures cover ${pc(f.imageCoverage)} of the slide`);
-  if (f.images >= 1 && ((f.imageCoverage >= 0.15 && f.words <= 60) || IMG_TYPES.includes(L))) return out('image', 'medium', `picture-led layout, ${f.words} words`);
-  if (f.words >= 1) return out('text', f.hasBody ? 'high' : 'medium', `${f.words} words`, f.hasBody ? 'body placeholder' : 'free text boxes');
+  if (f.contentCoverage >= 0.3) return out('image', f.contentCoverage >= 0.5 ? 'high' : 'medium', `pictures cover ${pc(f.contentCoverage)} of the slide`);
+  if (f.backdropImage && f.words <= 15) return out('image', f.words === 0 ? 'high' : 'medium', f.words === 0 ? 'full-slide picture with no text' : `full-slide picture with little text (${f.words} words)`);
+  if (f.contentImages >= 1 && ((f.contentCoverage >= 0.15 && f.words <= 60) || IMG_TYPES.includes(L))) return out('image', 'medium', `picture-led layout, ${f.words} words`);
+  if (f.words >= 1) return out('text', f.hasBody ? 'high' : 'medium', `${f.words} words`, f.hasBody ? 'body placeholder' : 'free text boxes', onPic);
   return out('other', 'low', 'no readable text, pictures, tables or charts');
 }
 
@@ -333,7 +444,7 @@ export async function extractDesign(parsed) {
   const presDoc = await readXml(zip, 'ppt/presentation.xml');
   const presRels = await readRels(zip, 'ppt/presentation.xml');
   const env = { layouts: new Map(), masters: new Map(), W, H, defaultTextStyle: desc(presDoc, 'defaultTextStyle')[0] || null,
-    stats: { unappliedMods: new Set(), clrOverride: false, inferredTitles: 0 } };
+    layerCache: new Map(), stats: { unappliedMods: new Set(), inferredTitles: 0 } };
   for (const r of presRels.values()) {
     if (r.kind !== 'slideMaster') continue;
     const m = await loadMaster(zip, r.target, env);
@@ -350,18 +461,33 @@ export async function extractDesign(parsed) {
     const layout = lRel ? await loadLayout(zip, lRel.target, env) : null;
     if (layout) layout.used++;
     const master = layout?.master || env.firstMaster || null;
-    const cx = master ? master.cx : { theme: EMPTY_THEME, clrMap: DEFAULT_CLRMAP };
+    // Colour map: the master's, replaced by a layout override, replaced by a slide override (how PowerPoint stores dark background styles).
+    const slideOvr = clrMapOf(doc);
+    const clrMap = { ...(master?.clrMap || DEFAULT_CLRMAP), ...(layout?.clrOvr || {}), ...(slideOvr || {}) };
+    const cx = { theme: master ? master.theme : EMPTY_THEME, clrMap };
+    const colorMap = slideOvr ? 'slide' : layout?.clrOvr ? 'layout' : 'master';
     const e = { ...env, cx, rels, layoutDoc: layout?.doc || null, master };
     const own = readBg(doc, cx, rels, env);
-    const bg = own ? { ...own, source: 'slide' } : layout?.bg ? { ...layout.bg, source: 'layout' } : master?.bg ? { ...master.bg, source: 'master' } : { type: 'none', source: 'default' };
+    const lbg = layout?.doc && master ? readBg(layout.doc, cx, layout.rels, env) : null;
+    const mbg = master?.doc ? readBg(master.doc, cx, master.rels, env) : null;
+    const bg = own ? { ...own, source: 'slide' } : lbg ? { ...lbg, source: 'layout' } : mbg ? { ...mbg, source: 'master' } : { type: 'none', source: 'default' };
     const shapes = [];
     walkTree(desc(doc, 'spTree')[0], (b) => b, e, shapes);
     if (inferTitle(shapes, H)) env.stats.inferredTitles++;
-    const f = features(shapes, bg, layout, W, H);
-    const cls = classify(f, i, slides.length);
+    for (const sh of shapes) { const r = roleOf(sh, W, H); sh.layoutRole = r.role; sh.edges = r.edges; }
     const effBg = bgHex(bg) || (bg.type === 'none' && cx.theme.colors[cx.clrMap.bg1]) || null;
-    S.push({ i, ps, shapes, bg, effBg, f, cls, cx, layout });
+    // Shapes drawn beneath the slide's own shapes: master, then layout (unless hidden).
+    const under = [];
+    if (!hidesMasterShapes(doc)) {
+      if (master && !hidesMasterShapes(layout?.doc)) under.push(...layerRecs(master, env, cx).filter((r) => !r.ph));
+      if (layout) under.push(...layerRecs(layout, env, cx).filter((r) => !r.ph));
+    }
+    shapes.forEach((sh, k) => { if (sh.runs.length) sh.backdrop = backdropOf(sh, [...under, ...shapes.slice(0, k)], { hex: effBg, type: bg.type }); });
+    const f = features(shapes, bg, layout, W, H);
+    S.push({ i, ps, shapes, bg, effBg, f, cls: null, cx, layout, colorMap });
   }
+  // Classify once every slide's features are known, so the last slide can be compared with the cover.
+  for (const s of S) s.cls = classify(s.f, s.i, S.length, S[0]?.f);
   return assemble(parsed, env, S);
 }
 
@@ -378,7 +504,6 @@ function assemble(parsed, env, S) {
   ];
   if (theme.missing) limitations.push('No theme part was found, so theme colours and fonts are unavailable and scheme-based colours could not be resolved.');
   if (env.stats.unappliedMods.size) limitations.push(`Colour transforms not applied: ${[...env.stats.unappliedMods].join(', ')}. Affected colours may be approximate.`);
-  if (env.stats.clrOverride) limitations.push('Some layouts override the colour mapping; those overrides are not applied.');
   if (env.stats.inferredTitles) limitations.push(`${env.stats.inferredTitles} slide(s) have no title placeholder; the top, largest text box was treated as the title.`);
   limitations.push('Group rotation and flips are ignored when positioning shapes.');
 
@@ -394,8 +519,11 @@ function assemble(parsed, env, S) {
     for (const d of [...(s.layout?.decor || []), ...(s.layout?.master?.decor || [])]) {
       if (d.fill && d.box.w * d.box.h < 8100) { const w = (d.box.w * d.box.h) / 10000; addPal({ hex: d.fill, slot: d.slot, approx: d.approx }, 'fill', w); totFill += w; }
     }
-    const nonFooter = s.shapes.filter((x) => !FOOTER.has(x.phRaw));
-    const content = nonFooter.filter((x) => x.box && ['text', 'image', 'table', 'chart', 'object'].includes(x.kind) && !(x.box.w >= 0.9 * W && x.box.h >= 0.9 * H));
+    // Margins describe the content frame only: pictures and panels that bleed off the slide, and full-slide backgrounds, are decoration.
+    const content = s.shapes.filter((x) => x.layoutRole === 'content' && ['text', 'image', 'table', 'chart', 'object'].includes(x.kind) && !(x.box.w >= 0.9 * W && x.box.h >= 0.9 * H));
+    const bleed = [...new Set(s.shapes.filter((x) => x.layoutRole === 'bleed').flatMap((x) => x.edges))];
+    const offSlide = s.shapes.some((x) => x.layoutRole === 'offslide' && x.words > 0 || (x.layoutRole === 'content' && x.words > 0 && x.edges.length));
+    let checked = 0; let unchecked = 0;
     let minPt = null; let maxPt = null; let titleSz = null; let smallChars = 0; let worst = null; let shapeCount = {};
     for (const sh of s.shapes) {
       kinds[sh.kind] = (kinds[sh.kind] || 0) + 1; shapeCount[sh.kind] = (shapeCount[sh.kind] || 0) + 1;
@@ -415,11 +543,15 @@ function assemble(parsed, env, S) {
           if (r.sz < 12) smallChars += r.chars;
         }
         if (sh.role === 'title') titleSz = r.sz;
-        const bgc = sh.fill?.type === 'solid' && sh.fill.hex ? sh.fill.hex : s.effBg;
-        if (!bgc) { unevalBg.n += r.chars; }
+        // Contrast is judged against what the text is really painted on (see backdropOf), with text alpha applied.
+        const bd = sh.backdrop;
+        if (!bd?.hexes) { unevalBg.n += r.chars; unchecked += r.chars; }
         else if (r.hex) {
-          const ratio = contrast(r.hex, bgc); const large = r.sz >= 18 || (r.b && r.sz >= 14);
-          if (ratio < (large ? 3 : 4.5) && (!worst || ratio < worst.ratio)) worst = { ratio: r2(ratio), text: r.hex, background: bgc };
+          checked += r.chars;
+          let best = null;
+          for (const c of bd.hexes) { const t = over(r.hex, r.alpha, c); const ratio = contrast(t, c); if (!best || ratio > best.ratio) best = { ratio, text: t, background: c }; }
+          const large = r.sz >= 18 || (r.b && r.sz >= 14);
+          if (best.ratio < (large ? 3 : 4.5) && (!worst || best.ratio < worst.ratio)) worst = { ratio: r2(best.ratio), text: best.text, background: best.background, sizePt: r.sz, sample: sh.text.slice(0, 30) };
         }
       }
     }
@@ -429,8 +561,8 @@ function assemble(parsed, env, S) {
     // margins from content bounds
     let bounds = null;
     if (content.length) {
-      const x0 = Math.min(...content.map((c) => c.box.x)); const y0 = Math.min(...content.map((c) => c.box.y));
-      const x1 = Math.max(...content.map((c) => c.box.x + c.box.w)); const y1 = Math.max(...content.map((c) => c.box.y + c.box.h));
+      const x0 = Math.max(0, Math.min(...content.map((c) => c.box.x))); const y0 = Math.max(0, Math.min(...content.map((c) => c.box.y)));
+      const x1 = Math.min(W, Math.max(...content.map((c) => c.box.x + c.box.w))); const y1 = Math.min(H, Math.max(...content.map((c) => c.box.y + c.box.h)));
       bounds = { left: r1((x0 / W) * 100), top: r1((y0 / H) * 100), right: r1(((W - x1) / W) * 100), bottom: r1(((H - y1) / H) * 100) };
     }
     // vertical gaps between stacked content
@@ -440,7 +572,7 @@ function assemble(parsed, env, S) {
       const ov = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
       if (ov >= 0.5 * Math.min(a.w, b.w) && b.y >= a.y + a.h) gaps.push(((b.y - a.y - a.h) / H) * 100);
     }
-    Object.assign(s, { bounds, minPt, maxPt, titleSz, smallChars, worst, gaps, shapeCount, content });
+    Object.assign(s, { bounds, minPt, maxPt, titleSz, smallChars, worst, gaps, shapeCount, content, bleed, offSlide, checked, unchecked });
   }
 
   // palette
@@ -466,7 +598,7 @@ function assemble(parsed, env, S) {
   };
   if (unresolved) limitations.push(`${Math.round((unresolved / totText) * 100)}% of text had no size anywhere in the file's style chain; 18 pt (the PowerPoint default) was assumed for it.`);
   if (shrunk) limitations.push(`${shrunk} text box(es) use "shrink text on overflow"; sizes were scaled by the stored factor, which PowerPoint may recompute when opened.`);
-  if (unevalBg.n && totText) limitations.push(`Contrast was not evaluated for ${Math.round((unevalBg.n / totText) * 100)}% of text (gradient, image or effect backgrounds have no single colour).`);
+  if (unevalBg.n && totText) limitations.push(`Contrast was not evaluated for ${Math.round((unevalBg.n / totText) * 100)}% of text (it sits on a picture, gradient or effect fill, which has no single colour).`);
   if (!totText) limitations.push('This template has no text, so typography and contrast could not be analysed.');
 
   // spacing
@@ -478,6 +610,7 @@ function assemble(parsed, env, S) {
   const totAlign = Object.values(algn).reduce((a, b) => a + b, 0) || 1;
   const spacing = {
     marginsPct: margins, spreadPct: spread, gapPct: r1(median(allGaps)),
+    bleedSlides: S.filter((s) => s.bleed.length).length, offSlideSlides: S.filter((s) => s.offSlide).length,
     textInsetsEmu: Object.fromEntries(Object.entries(insets).map(([k, v]) => [k, v.length ? median(v) : { l: 91440, t: 45720, r: 91440, b: 45720 }[k]])),
     insetsSource: insets.l.length || insets.t.length ? 'explicit where set, PowerPoint defaults elsewhere' : 'PowerPoint defaults',
     alignment: Object.fromEntries(Object.entries(algn).map(([k, v]) => [k, r2(v / totAlign)])),
@@ -511,7 +644,9 @@ function assemble(parsed, env, S) {
   for (const s of S) {
     classes[s.cls.class]++; conf[s.cls.confidence]++;
     slideRecs.push({ n: s.i + 1, title: s.ps.title, layout: s.layout?.name || null, layoutType: s.layout?.type || null, class: s.cls.class, confidence: s.cls.confidence, reasons: s.cls.reasons,
-      background: { type: s.bg.type, hex: s.bg.hex || s.effBg || null, source: s.bg.source }, words: s.f.words, counts: s.shapeCount, imageCoverage: r2(s.f.imageCoverage), bounds: s.bounds, minPt: s.minPt, maxPt: s.maxPt });
+      background: { type: s.bg.type, hex: s.bg.hex || s.effBg || null, source: s.bg.source, picture: s.f.backdropImage || undefined }, words: s.f.words, counts: s.shapeCount,
+      imageCoverage: r2(s.f.imageCoverage), contentImageCoverage: r2(s.f.contentCoverage), bounds: s.bounds, bleed: s.bleed.length ? s.bleed : undefined, offSlide: s.offSlide || undefined, colorMap: s.colorMap, minPt: s.minPt, maxPt: s.maxPt,
+      contrast: { status: s.worst ? 'low' : s.checked ? 'ok' : s.unchecked ? 'not-evaluated' : 'no-text', ratio: s.worst?.ratio, text: s.worst?.text, background: s.worst?.background, unchecked: s.unchecked ? r2(s.unchecked / (s.checked + s.unchecked)) : undefined } });
   }
 
   const bgDominant = topKey(bgColors);
@@ -563,7 +698,7 @@ function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S,
   }
 
   const findings = [];
-  const add = (code, severity, message, slides = []) => findings.push({ code, severity, message, slides: slides.slice(0, 20) });
+  const add = (code, severity, message, slides = [], evidence) => findings.push({ code, severity, message, slides: slides.slice(0, 20), evidence });
   const small = S.filter((s) => s.smallChars > 0).map((s) => s.i + 1);
   if (small.length) add('small-text', 'warn', 'Text under 12 pt is hard to read on a projector.', small);
   if (t.sizes.length && body != null && body < 14) add('low-body-size', 'info', `The dominant body size is ${body} pt; 16 pt or more reads better on screen.`);
@@ -571,8 +706,9 @@ function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S,
   if (manyFonts.length > 2) add('many-fonts', 'warn', `${manyFonts.length} font families carry more than 2% of the text each (${manyFonts.map((f) => f.name).join(', ')}). Two is the usual limit.`);
   const off = palette.filter((c) => !c.slot && !c.neutral);
   if (off.length >= 3) add('off-theme-colors', 'info', `${off.length} hard-coded colours are not part of the theme palette, so they will not follow a theme change.`);
-  const low = S.filter((s) => s.worst).map((s) => s.i + 1);
-  if (low.length) add('low-contrast', 'warn', 'Text/background contrast is below WCAG AA (4.5:1 for normal text, 3:1 for large text).', low);
+  const lowS = S.filter((s) => s.worst); const low = lowS.map((s) => s.i + 1);
+  if (low.length) add('low-contrast', 'warn', 'Text/background contrast is below WCAG AA (4.5:1 for normal text, 3:1 for large text).', low,
+    lowS.slice(0, 5).map((s) => ({ slide: s.i + 1, ratio: s.worst.ratio, text: s.worst.text, background: s.worst.background, sizePt: s.worst.sizePt, sample: s.worst.sample })));
   const lefts = S.filter((s) => s.bounds).map((s) => s.bounds.left); const medL = median(lefts);
   const offMargin = S.filter((s) => s.bounds && Math.abs(s.bounds.left - medL) > 4).map((s) => s.i + 1);
   if (offMargin.length >= 2 && offMargin.length < n) add('inconsistent-margins', 'info', 'Left margins differ by more than 4% of the slide width from the template median.', offMargin);

@@ -1,8 +1,8 @@
-# SlideFlow handover (Phase 1 + Phase 2)
+# SlideFlow handover (Phase 1 + Phase 2 + Phase 2.1)
 
 ## Status
 
-Phases 1 and 2 built and verified in headless Chromium (Local mode, strict CSP): 92 automated checks pass (42 Phase 1 regression, 50 Phase 2).
+Phases 1 and 2 were verified in headless Chromium (Local mode, strict CSP): 92 e2e checks (42 Phase 1, 50 Phase 2). Phase 2.1 (precision fixes, below) was built in a sandbox without Chromium: its 55 browser-free analysis checks pass (`npm run test:analysis`), the e2e file was edited (design version 2, 4 new checks) but **has not been re-run**; run `npm test` once.
 **Not verified**: live Firebase (auth, Firestore, Storage), the security rules in the emulator, the CSP against live Firebase endpoints, real-world PowerPoint/Keynote/Google Slides files. See `TESTING.md` for the manual list. Treat the Firebase path as written-to-spec but untested until that list is done.
 
 ## Architecture
@@ -20,7 +20,7 @@ No build. Browser ES modules, hash router, one global `ctx = { store, toast, use
 
 ## Phase 2: Design System
 
-Template record gains `design` (object), `designVersion` (int, currently `DESIGN_VERSION = 1`) and `mode` (`preserve` | `enhance`, absent = preserve). Projects gain `mode`. All other fields, IDs and file paths are untouched. Analysis updates never change `updatedAt`, so library order is stable.
+Template record gains `design` (object), `designVersion` (int, currently `DESIGN_VERSION = 2`) and `mode` (`preserve` | `enhance`, absent = preserve). Projects gain `mode`. All other fields, IDs and file paths are untouched. Analysis updates never change `updatedAt`, so library order is stable.
 
 Shape of `design` (`schema: "slideflow.design"`):
 
@@ -32,7 +32,7 @@ backgrounds {types, colors[]}          shapes {total, byKind, presets}
 layouts {masters[{part,theme,layouts,decor[]}], list[{name,type,used,decor,placeholders[{type,box%}]}]}
 spacing {marginsPct{left,right,top,bottom}, spreadPct, gapPct, textInsetsEmu, alignment{left..}}
 patterns[{id,layout,slides[],class}]   recurring[{kind,label,box,count}]
-classification {counts, confidence}    slides[{n,title,layout,layoutType,class,confidence,reasons[],background,words,counts,bounds,minPt,maxPt}]
+classification {counts, confidence}    slides[{n,title,layout,layoutType,class,confidence,reasons[],background{type,hex,source,picture?},words,counts,imageCoverage,contentImageCoverage,bounds,bleed[]?,offSlide?,colorMap,contrast{status,ratio?,text?,background?,unchecked?},minPt,maxPt}]
 modes {preserve{tokens}, enhance{tokens,changes[],findings[]}, note}     limitations[]
 ```
 Boxes are percentages of the slide. No nested arrays (Firestore restriction); the test suite asserts this. Typical size 6-12 KB.
@@ -40,8 +40,22 @@ Boxes are percentages of the slide. No nested arrays (Firestore restriction); th
 How it decides (all in `design.js`, each rule commented):
 - **Style resolution**: run properties, then shape `lstStyle`, layout placeholder, master placeholder, master `txStyles` (title/body/other), then `presentation.xml` defaults. `+mj-lt`/`+mn-lt` resolve via the theme. RTL runs use the `cs` font.
 - **Colours**: `srgbClr`, `schemeClr` (through the master colour map), `sysClr`; lumMod/lumOff applied, other transforms flagged approximate.
-- **Classification** (`classify()`): order is chart/table, title (first slide), closing (wording in last two slides), section (layout type or very short title-only slide), comparison (two side-by-side text blocks), image (coverage of 30% or more), text, other. Layout type from the file (`secHead`, `twoTxTwoObj`...) gives `high`; content-only evidence gives `medium`.
+- **Classification** (`classify()`): order is chart/table, title (first slide), closing (wording or layout name in last two slides, or a last slide framed like the cover), section (layout type or very short title-only slide), comparison (two side-by-side text blocks), image (content pictures cover 30% or more, or a full-slide picture with almost no text), text, other. Layout type from the file (`secHead`, `twoTxTwoObj`...) gives `high`; content-only evidence gives `medium`. A picture covering the whole slide is a *background* (`layoutRole: background`) and never counts as image content.
 - **Smart Enhance** (`buildModes()`): body at least 16 pt, title at least 28 pt and 1.25x body, footers at least 12 pt, margins at least 5/5/5/4 %, text colour swapped for the theme colour with better contrast when under 4.5:1. Fonts and palette are never replaced.
+
+## Phase 2.1: precision fixes (found by testing a real dark template)
+
+Symptoms and root causes, all in `design.js`; no architecture change, `design` stays additive (all Phase 2 fields kept, new ones optional). `DESIGN_VERSION` is now 2, so stored v1 analyses are re-run automatically on the next preview (cards keep working with v1 data until then).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Low contrast on every slide although text is white on #211D19 | Colour-map overrides were ignored. Dark decks written by PowerPoint put `overrideClrMapping` (bg1=dk1, tx1=lt1) on the slide or layout, so unset text colour resolved to the *theme's dark* colour. Also: a text box was only compared with the slide background, ignoring panels, translucent fills and pictures under it; autoshape text colour from `<p:style><a:fontRef>` was ignored; fill and text alpha ignored | Effective colour map = master, then layout override, then slide override (`clrMapOf`). Contrast now uses `backdropOf()`: slide background, then master/layout shapes, earlier slide shapes and the shape's own fill, composited in z-order with alpha. Pictures, gradients and effect fills give no single colour, so that text is reported as *not evaluated* instead of guessed. Partial overlaps and non-rectangular shapes add candidate colours; text is flagged only when it fails against every candidate. `fontRef` colour added to the style chain |
+| Negative margins | Content bounds used raw boxes, so bleeding pictures and off-slide decoration gave negative values | `roleOf()` labels each shape `content`, `bleed`, `background`, `footer` or `offslide`. Margins use content only, clipped to the slide and never negative. Text boxes that truly run off the slide set `offSlide` |
+| Slides 1 and 15 classed as image | Image coverage was tested before position, and a full-slide picture counted as image content | Pictures covering the slide are backgrounds. First slide is a title by position and wording. Last slide with a full-slide picture and little text is a closing (high when it mirrors the cover). Layout-name hints (`Title Slide`, `Thank you`, `Contact`). A lone large text box is inferred as the title so dividers are found |
+
+Diagnostics: each slide record carries `colorMap` (`master`/`layout`/`slide`), `contrast` (`ok`, `low`, `not-evaluated`, `no-text`) with the worst pair, `bleed`, `offSlide` and `background.picture`; the `low-contrast` finding lists up to 5 `evidence` entries (slide, text colour, backdrop colour, ratio, first 30 characters). The Design tab and the slide details show them.
+
+Known limits kept honest: the real template was not available, so the fixes were driven by a synthetic deck that reproduces each symptom (`tests/make_fixture_p21.py`); if the real file still misbehaves, its design JSON now says why. Bleed detection treats any non-text shape crossing an edge, and any picture touching an edge, as decoration. Text over a picture is never judged for contrast. Slide-level `masterClrMapping` is treated as "inherit from the layout".
 
 Tuning knobs worth knowing: thresholds in `classify()` and `buildModes()`; `DESIGN_VERSION` (bump to force re-analysis of all stored templates on next preview).
 
@@ -72,7 +86,7 @@ Static hosting, no functions. Costs come from Storage and Firestore reads: list 
 - Group and placeholder geometry ignore rotation and flips. Placeholders whose position cannot be resolved are listed but not drawn.
 - Local-mode data is not migrated to Firebase.
 - Design analysis runs on the main thread (about 60 ms for 11 slides; yields every 10 slides). A 200-slide deck may take a couple of seconds; move to a Web Worker if that becomes noticeable.
-- Analysis of legacy templates happens on first Preview and writes the result back (derived cache; no existing field is changed).
+- Analysis of legacy templates happens on first Preview and writes the result back (derived cache; no existing field is changed). A version bump (v1 to v2) triggers the same refresh.
 - The Firestore rules for Phase 2 (update path) are untested against the emulator.
 - No rename or edit for projects or templates; no multi-file upload; no search or pagination beyond 200 items.
 - Hash routing; Firebase Hosting or Vercel rewrites are not needed.

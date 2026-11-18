@@ -59,7 +59,7 @@ export function designPanel(t, d, { onMode, onReanalyze }) {
         return [k, a, h('span', { class: text(a) !== text(b) ? 'diff' : '' }, b)];
       })),
       h('p', { class: 'muted fine' }, d.modes.note)),
-    enhance.findings.length ? sec('Readability findings', h('ul', { class: 'finds' }, enhance.findings.map((f) => h('li', {}, h('span', { class: `tag ${f.severity}` }, f.severity === 'warn' ? 'Fix' : 'Note'), f.message, f.slides.length ? h('span', { class: 'muted' }, ` Slides: ${f.slides.join(', ')}.`) : null))))
+    enhance.findings.length ? sec('Readability findings', h('ul', { class: 'finds' }, enhance.findings.map((f) => h('li', {}, h('span', { class: `tag ${f.severity}` }, f.severity === 'warn' ? 'Fix' : 'Note'), f.message, f.slides.length ? h('span', { class: 'muted' }, ` Slides: ${f.slides.join(', ')}.`) : null, f.evidence?.length ? h('span', { class: 'muted' }, ` ${f.evidence.map((e) => `Slide ${e.slide}: #${e.text} on #${e.background}, ${e.ratio}:1${e.sample ? ` ("${e.sample}")` : ''}`).join('; ')}.`) : null))))
       : sec('Readability findings', h('p', { class: 'muted' }, 'No readability problems were found by the checks Smart Enhance runs.')),
     enhance.changes.length > 0 && sec('Smart Enhance changes', h('ul', { class: 'finds' }, enhance.changes.map((c) => h('li', {}, h('strong', {}, c.token), `: ${c.from} to ${c.to}. `, h('span', { class: 'muted' }, c.reason))))),
 
@@ -79,11 +79,12 @@ export function designPanel(t, d, { onMode, onReanalyze }) {
       ['Margins (median)', `left ${pc(m.marginsPct.left)}, right ${pc(m.marginsPct.right)}, top ${pc(m.marginsPct.top)}, bottom ${pc(m.marginsPct.bottom)}`],
       ['Margin variation', `left ${pc(m.spreadPct.left)}, top ${pc(m.spreadPct.top)} (10th to 90th percentile)`],
       ['Gap between stacked items', pc(m.gapPct)],
+      m.bleedSlides ? ['Bleed shapes', `${plural(m.bleedSlides, 'slide')} ${m.bleedSlides === 1 ? 'has' : 'have'} pictures or shapes that run off the edge; they are left out of the margins.`] : null,
       ['Text alignment', Object.entries(m.alignment).map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(', ') || 'n/a'],
       ['Text insets', `${m.insetsSource}`],
       ['Backgrounds', Object.entries(d.backgrounds.types).map(([k, v]) => `${k} ${v}`).join(', ')],
       ['Shapes', Object.entries(d.shapes.byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'],
-    ])),
+    ].filter(Boolean))),
 
     sec('Slide types',
       h('div', { class: 'chips' }, Object.entries(d.classification.counts).filter(([, n]) => n).map(([k, n]) => h('span', { class: 'chip' }, `${CLASS_LABEL[k]} ${n}`))),

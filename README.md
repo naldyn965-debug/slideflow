@@ -31,7 +31,7 @@ Every template is analysed in the browser into a versioned JSON **Design System*
 - Classes are heuristics, not understanding; check the confidence. Layout-name hints only work for English names.
 - PPTX has no font weights beyond bold/regular; "Semibold" etc. appear in the font name.
 - Charts, tables, SmartArt and video are detected by presence, position and size only.
-- Colour transforms other than lumMod/lumOff (tint, shade, satMod) are not applied; affected colours are flagged approximate. Layout colour-map overrides, group rotation/flips, picture pixel resolution and gradient/image background contrast are not evaluated.
+- Colour transforms other than lumMod/lumOff (tint, shade, satMod) are not applied; affected colours are flagged approximate. Group rotation/flips and picture pixel resolution are not evaluated. Contrast is not judged where text sits on a picture or gradient (it is reported as "not evaluated" instead). Colour-map overrides on slides and layouts (PowerPoint's dark background styles) are applied.
 - Slides without a title placeholder use the top, largest text box as the title (disclosed in the limits list).
 - Verified on python-pptx and pptxgenjs files only. PowerPoint, Keynote and Google Slides exports are untested.
 
@@ -94,4 +94,4 @@ tests/                fixtures, make_fixtures.py, make_fixtures_p2.py, make_fixt
 
 ## Tests
 
-See `TESTING.md`. Short version: `npm i && npx playwright install chromium && npm test` (92 checks).
+See `TESTING.md`. Short version: `npm i && npx playwright install chromium && npm test` (e2e, needs Chromium) and `npm run test:analysis` (55 browser-free checks of the analysis layer, needs only `npm i`).

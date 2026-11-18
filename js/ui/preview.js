@@ -82,7 +82,11 @@ export async function openPreview(ctx, t, { onChange } = {}) {
       h('p', {}, `${CLASS_LABEL[c.class]} `, h('span', { class: 'muted' }, `(${c.confidence} confidence)`)),
       h('ul', { class: 'file-list' }, c.reasons.map((r) => h('li', {}, r))),
       h('p', { class: 'muted' }, h('span', { class: 'inl' }, 'Background: ', c.background.hex ? swatch(c.background.hex) : null, `${c.background.type}${c.background.hex ? ` #${c.background.hex}` : ''}, from ${c.background.source}`)),
+      c.background.picture ? h('p', { class: 'muted' }, 'A full-slide picture is treated as the background, not as image content.') : null,
       c.minPt != null ? h('p', { class: 'muted' }, `Text sizes: ${c.minPt === c.maxPt ? c.minPt : `${c.minPt} to ${c.maxPt}`} pt`) : null,
+      c.contrast?.status === 'low' ? h('p', { class: 'muted' }, h('span', { class: 'inl' }, 'Low contrast: ', swatch(c.contrast.text), `#${c.contrast.text} on `, swatch(c.contrast.background), `#${c.contrast.background} (${c.contrast.ratio}:1)`)) : null,
+      c.contrast?.status === 'not-evaluated' ? h('p', { class: 'muted' }, 'Contrast not evaluated: the text sits on a picture or gradient.') : null,
+      c.bleed?.length ? h('p', { class: 'muted' }, `Shapes run off the ${c.bleed.join(', ')} edge; they are ignored for margins.`) : null,
     ];
   }
 
