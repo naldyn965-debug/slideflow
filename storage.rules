@@ -1,0 +1,15 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Private per user. PPTX only, max 50 MB, no overwrite (files are immutable; delete + re-upload).
+    match /users/{uid}/templates/{file} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+                    && file.matches('[A-Za-z0-9-]+\\.pptx')
+                    && request.resource.size > 0 && request.resource.size <= 50 * 1024 * 1024
+                    && request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      allow update: if false;
+    }
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}

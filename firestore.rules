@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function text(v, max) { return v is string && v.size() > 0 && v.size() <= max; }
+
+    // Templates are immutable records of an uploaded file (delete + re-upload to change).
+    function validTemplate(d, uid, id) {
+      return d.keys().hasOnly(['name', 'fileName', 'size', 'storagePath', 'slideCount', 'width', 'height',
+                               'mediaCount', 'imageRefs', 'slideTitles', 'warnings', 'schemaVersion', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['name', 'fileName', 'size', 'storagePath', 'slideCount', 'width', 'height', 'schemaVersion', 'createdAt', 'updatedAt'])
+        && text(d.name, 120) && text(d.fileName, 255)
+        && d.size is int && d.size > 0 && d.size <= 52428800
+        && d.storagePath == 'users/' + uid + '/templates/' + id + '.pptx'
+        && d.slideCount is int && d.slideCount >= 1 && d.slideCount <= 200
+        && d.width is int && d.width > 0 && d.height is int && d.height > 0
+        && (!('slideTitles' in d) || (d.slideTitles is list && d.slideTitles.size() <= 200))
+        && (!('warnings' in d) || (d.warnings is list && d.warnings.size() <= 20))
+        && d.schemaVersion == 1 && d.createdAt is number && d.updatedAt is number;
+    }
+
+    function validProject(d) {
+      return d.keys().hasOnly(['name', 'templateId', 'templateName', 'schemaVersion', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['name', 'schemaVersion', 'createdAt', 'updatedAt'])
+        && text(d.name, 120)
+        && (d.get('templateId', null) == null || (d.templateId is string && d.templateId.size() <= 64))
+        && (d.get('templateName', null) == null || (d.templateName is string && d.templateName.size() <= 120))
+        && d.schemaVersion == 1 && d.createdAt is number && d.updatedAt is number;
+    }
+
+    match /users/{uid}/templates/{id} {
+      allow read, delete: if owner(uid);
+      allow create: if owner(uid) && validTemplate(request.resource.data, uid, id);
+      allow update: if false;
+    }
+
+    match /users/{uid}/projects/{id} {
+      allow read, delete: if owner(uid);
+      allow create: if owner(uid) && validProject(request.resource.data);
+      allow update: if owner(uid) && validProject(request.resource.data)
+                    && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}
