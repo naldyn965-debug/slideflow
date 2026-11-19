@@ -527,8 +527,12 @@ function features(shapes, bg, layout, W, H, deco = new Set()) {
   const title = body.find(isTitle)?.text || '';
   const L = layout?.type || null; const N = layout?.name || '';
   const words = body.reduce((n, s) => n + s.words, 0);
+  // Largest font of the title against the largest of the remaining text: a cover keeps its title far above its subtitle, tagline and URL lines.
+  const sizeOf = (s) => (s.runs?.length ? Math.max(...s.runs.map((r) => r.sz || 0)) : 0);
+  const titleSz = sizeOf(body.find(isTitle) || { runs: [] }); const otherSz = Math.max(0, ...blocks.map(sizeOf));
   return {
     layoutType: L, layoutName: N,
+    titleSz, otherSz, titleDominant: titleSz > 0 && titleSz >= 1.5 * otherSz,
     words, bodyWords: blocks.reduce((n, s) => n + s.words, 0), textBlocks: blocks.length,
     images: pics.length, contentImages: contentPics.length, decorImages: decorPics.length,
     imageCoverage: Math.min(1, pics.reduce((n, s) => n + clipA(s), 0) / A),
@@ -554,8 +558,11 @@ function classify(f, i, n, cover) {
     return out('chart-table', f.chartArea >= 0.2 ? 'high' : 'medium', f.charts ? `${f.charts} chart object(s)` : `${f.tables} table(s)`, `covers ${pc(f.chartArea)} of the slide`);
   // First slide: position and wording decide, never picture coverage (covers are often one big photo).
   const titleLayout = f.hasCtrTitle || L === 'title' || KW_TITLE_NAME.test(N);
-  if (i === 0 && (titleLayout || (f.words >= 1 && f.words <= 30 && f.textBlocks <= 3 && f.contentCoverage < 0.5) || (n > 1 && f.words === 0 && f.backdropImage && f.contentImages === 0)))
-    return out('title', titleLayout ? 'high' : 'medium', titleLayout ? 'title layout / centred-title placeholder' : f.words ? 'first slide with little text' : 'first slide that is only a full-slide picture', 'first slide', onPic);
+  // More than 3 further text boxes (subtitle, tagline, URL, an un-flagged brand name) are fine on a cover when its title clearly dominates them.
+  const labelled = f.textBlocks > 3 && f.titleDominant;
+  if (i === 0 && (titleLayout || (f.words >= 1 && f.words <= 30 && (f.textBlocks <= 3 || f.titleDominant) && f.contentCoverage < 0.5) || (n > 1 && f.words === 0 && f.backdropImage && f.contentImages === 0)))
+    return out('title', titleLayout ? 'high' : 'medium', titleLayout ? 'title layout / centred-title placeholder' : f.words ? 'first slide with little text' : 'first slide that is only a full-slide picture', 'first slide',
+      !titleLayout && labelled ? `title text (${Math.round(f.titleSz)} pt) dominates the ${f.textBlocks} other text boxes (${Math.round(f.otherSz)} pt at most)` : null, onPic);
   const closeLayout = KW_CLOSE_NAME.test(N);
   if (i >= n - 2 && i > 0 && (f.closingKw || closeLayout) && f.words <= 40) return out('closing', 'high', closeLayout && !f.closingKw ? `layout name "${N}"` : 'closing wording found (thanks, questions, contact)', i === n - 1 ? 'last slide' : 'second-to-last slide', onPic);
   if (i === n - 1 && n > 2 && f.words <= 15 && (L === 'title' || f.hasCtrTitle || L === 'secHead')) return out('closing', 'medium', 'last slide using a title-style layout with little text');

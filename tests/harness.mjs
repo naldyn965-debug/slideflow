@@ -20,3 +20,18 @@ export async function analyse(file) {
   const parsed = await parsePptx(new Uint8Array(buf));
   return { parsed, design: await extractDesign(parsed) };
 }
+/**
+ * The same analysis on a copy of a deck whose parts are rewritten in memory (nothing is written to disk). `edits` maps a part name to a
+ * function from its XML text to new XML text: { 'ppt/slides/slide2.xml': (xml) => xml.replace(...) }. Used for regression tests that
+ * move a shape of a real deck past an edge to prove that genuine overflow is still reported.
+ */
+export async function analyseEdited(file, edits) {
+  const zip = await globalThis.JSZip.loadAsync(await readFile(file));
+  for (const [part, fn] of Object.entries(edits)) {
+    const f = zip.file(part);
+    if (!f) throw new Error(`analyseEdited: no part ${part}`);
+    zip.file(part, fn(await f.async('string')));
+  }
+  const parsed = await parsePptx(await zip.generateAsync({ type: 'uint8array', compression: 'STORE' }));
+  return { parsed, design: await extractDesign(parsed) };
+}

@@ -45,7 +45,7 @@ export async function openPreview(ctx, t, { onChange } = {}) {
   slide.style.aspectRatio = `${W} / ${H}`;
   const details = h('div', { class: 'details' });
   const items = parsed.slides.map((s, i) => h('li', {}, h('button', { type: 'button', class: 'film-item', 'data-i': i, onclick: () => select(i) },
-    h('span', { class: 'film-n' }, i + 1), h('span', { class: 'film-t' }, s.title || 'No title'), design && h('span', { class: 'tag' }, CLASS_LABEL[design.slides[i]?.class] || ''), s.hidden && h('span', { class: 'tag' }, 'Hidden'))));
+    h('span', { class: 'film-n' }, i + 1), h('span', { class: 'film-t' }, (design?.slides[i] ? design.slides[i].title : s.title) || 'No title'), design && h('span', { class: 'tag' }, CLASS_LABEL[design.slides[i]?.class] || ''), s.hidden && h('span', { class: 'tag' }, 'Hidden'))));
   let current = -1;
 
   async function select(i) {

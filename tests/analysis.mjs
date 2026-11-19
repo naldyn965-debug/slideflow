@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { analyse, DESIGN_VERSION } from './harness.mjs';
+import { analyse, analyseEdited, DESIGN_VERSION } from './harness.mjs';
 const FX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL', m); } };
@@ -156,6 +156,27 @@ ok(cls(T) === 'title,text,text,text,text,text,text,text,text,closing', `p23 clas
 ok([1, 2, 3, 4, 5, 6, 8, 9, 10].every((n) => !ts(n).bleed && !ts(n).bleedDetail) && !T.slides.some((s) => s.offSlide), 'p23 phantom: empty text boxes (no text, fill or outline) crossing the top edge are neither bleed nor content');
 ok(ts(7).bleed?.join() === 'top' && ts(7).bleedDetail.length === 2 && T.spacing.bleedSlides === 1, `p23 phantom: empty text frames that ARE drawn (outline, fill) stay decorative bleed (${ts(7).bleedDetail?.length}, ${T.spacing.bleedSlides} slide)`);
 
+// ---------- Cover detection: a dominant title is a cover however many small label boxes it has ----------
+// The real FOOD cover has a 194 pt title and four small boxes (subtitle, tagline, URL and a brand name that sits at another place than on slides 2-14, so it is
+// not template text). Before: more than 3 further text boxes made the first slide "text". Here slide 1 of p23-template-text (COVER 150 pt, a 28 pt subtitle and a 21 pt
+// brand name) is extended in memory, so these checks run without the 27 MB deck.
+const P23 = path.join(FX, 'p23-template-text.pptx');
+const sp = (id, x, y, sz, text) => `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Extra ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="4389120" cy="400000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="square"><a:spAutoFit/></a:bodyPr><a:lstStyle/><a:p><a:r><a:rPr sz="${sz}" b="0"/><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp>`;
+const tagline = (sz = 2100) => sp(5, 3901440, 5000000, sz, 'Learn why every meal matters');
+const url = sp(6, 3901440, 5600000, 2100, 'www.example.com');
+const cover = async (...steps) => (await analyseEdited(P23, { 'ppt/slides/slide1.xml': (xml) => steps.reduce((x, f) => f(x), xml) })).design.slides[0];
+const add = (...xs) => (xml) => xml.replace('</p:spTree>', `${xs.join('')}</p:spTree>`);
+const swap = (a, b) => (xml) => { if (!xml.includes(a)) throw new Error(`edit target not found: ${a}`); return xml.replace(a, b); };
+const k1 = await cover(add(tagline(), url));
+ok(k1.class === 'title' && k1.confidence === 'medium' && k1.reasons.some((r) => r === 'title text (150 pt) dominates the 4 other text boxes (28 pt at most)'), `cover: a 150 pt title over 4 small text boxes (28 pt at most) is a title (${k1.class}/${k1.confidence}: ${k1.reasons})`);
+const k2 = await cover(swap('sz="15000"', 'sz="2800"'), add(tagline(), url));
+ok(k2.class === 'text', `cover: 4 text boxes and no dominant title (title the same size as the subtitle) stays text (${k2.class})`);
+const k3 = await cover(add(tagline(11000), url));
+ok(k3.class === 'text', `cover: a title only 1.36x the next text (150 pt against 110 pt) does not dominate it, so the slide stays text (${k3.class})`);
+const k4 = await cover(add(tagline(), url, sp(7, 3901440, 6000000, 1800, 'Each of the following lines is part of a long introductory paragraph that does not belong on a cover because it runs on and on well beyond what a title slide ever carries, naming food groups, meals, habits, drinks, shopping, cooking, storing and sharing.')));
+ok(k4.class === 'text' && k4.reasons.every((r) => !/dominates/.test(r)), `cover: a dominant title with more than 30 words around it is still a text slide (${k4.class})`);
+ok((await cover()).class === 'title' && (await cover()).reasons.every((r) => !/dominates/.test(r)), 'cover: a cover with 3 text boxes or fewer is decided as before (no dominance reason)');
+
 // The real deck (27 MB, not committed): FOOD.pptx / "Brown and Green Modern Food Presentation". Set FOOD_PPTX or put it at tests/fixtures/FOOD.pptx.
 const FOOD_FILE = process.env.FOOD_PPTX || path.join(FX, 'FOOD.pptx');
 let FD = null;
@@ -177,7 +198,37 @@ if (existsSync(FOOD_FILE)) {
   ok([2, 4, 7, 8, 12].every((n) => f(n).bleedDetail === undefined || f(n).bleedDetail.every((b) => b.kind === 'picture')) && !f(2).bleed && FD.slides.slice(1, 14).every((s) => !s.bleedDetail || s.bleedDetail.every((b) => b.kind === 'picture')), 'FOOD phantom: the empty text boxes inside the groups are no longer reported as top bleed (only pictures remain)');
   ok(f(10).bleed.join() === 'left,top,right,bottom' && f(11).bleed.join() === 'left,top' && f(10).bleedDetail.filter((b) => b.kind === 'picture').length === 3 && f(10).bleedDetail.filter((b) => b.kind === 'picture').every((b) => b.mode === 'flush'), `FOOD S10/S11: flush picture bleed is unchanged (${f(10).bleed}, ${f(11).bleed})`);
   ok(FD.spacing.bleedSlides === 12 && FD.spacing.offSlideSlides === 0 && !FD.slides.some((s) => s.offSlide), `FOOD phantom: bleed slides 13 -> ${FD.spacing.bleedSlides}, nothing off-slide`);
-  ok(cls(FD) === 'text,text,text,text,text,text,text,text,text,text,text,text,text,text,closing', `FOOD classes: unchanged (${cls(FD)})`);
+  // S1 cover. Its brand text sits at (46.4%, 18.6%) on slides 1 and 15 but at (87.4%, 4.8%) on slides 2-14: the first spot is shared by 2 of 15 slides
+  // (5 needed), so it is not template text and the cover has 4 further text boxes beside its 194 pt title. The cover rule now accepts them when the title dominates.
+  ok(cls(FD) === 'title,text,text,text,text,text,text,text,text,text,text,text,text,text,closing', `FOOD classes: only S1 changed, text -> title (${cls(FD)})`);
+  ok(f(1).class === 'title' && f(1).confidence === 'medium' && f(1).reasons.some((r) => r === 'title text (194 pt) dominates the 4 other text boxes (35 pt at most)'), `FOOD S1: classified as a title, with the reason (${f(1).class}/${f(1).confidence}: ${f(1).reasons})`);
+  ok(FD.slides.slice(1).map((s) => `${s.class}/${s.confidence}`).join() === [...Array(13).fill('text/medium'), 'closing/high'].join(), `FOOD S2-S15: classes and confidences exactly as before the cover fix (${FD.slides.slice(1).map((s) => `${s.class}/${s.confidence}`)})`);
+  ok(FD.slides.slice(1).every((s) => s.reasons.every((r) => !/dominates/.test(r))), 'FOOD S2-S15: the cover rule leaves no trace outside slide 1');
+  ok(FD.classification.counts.title === 1 && FD.classification.counts.text === 13 && FD.classification.counts.closing === 1, `FOOD classification counts: 1 title, 13 text, 1 closing (${JSON.stringify(FD.classification.counts)})`);
+
+  // The 12 bleed slides. All of them are pictures touching an edge ("flush"); none is past an edge, so none is overflow. 21 pictures on slides 3-14.
+  // Slide 12's photo stops 5,347 EMU short of the right edge, slide 9's two pictures overshoot the bottom by 207 and 414 EMU: all inside the 0.5% rounding tolerance.
+  const flush = ['', '', 'right right', 'bottom', 'left right', 'right left', 'bottom', 'left+right+top', 'right+bottom bottom left+bottom', 'left+top top right+bottom', 'left+top top', 'right', 'right left', 'left+bottom', ''];
+  ok(FD.slides.map((s) => (s.bleedDetail || []).map((b) => b.edges.join('+')).join(' ')).join('|') === flush.join('|'), `FOOD bleed: the exact pictures and edges behind the 12 slides (${FD.slides.map((s) => (s.bleedDetail || []).map((b) => b.edges.join('+')).join(' ')).join('|')})`);
+  ok(FD.slides.filter((s) => s.bleed).map((s) => s.n).join() === '3,4,5,6,7,8,9,10,11,12,13,14' && FD.slides.flatMap((s) => s.bleedDetail || []).length === 21, 'FOOD bleed: slides 3-14 only (not the cover, S2 or the closing slide), 21 entries');
+  ok(FD.slides.flatMap((s) => s.bleedDetail || []).every((b) => b.kind === 'picture' && b.mode === 'flush' && b.byPct === 0), 'FOOD bleed: every entry is a picture touching an edge; no shape, nothing past an edge');
+  ok(FD.spacing.offSlideSlides === 0 && FD.slides.every((s) => s.offSlide === undefined && s.overflow === undefined) && !finding(FD, 'content-overflow'), 'FOOD overflow: none (the 12 bleed slides are not overflow, and no overflow finding is raised)');
+
+  // Genuine overflow is still reported on the real deck. Three shapes are moved in memory: S2 body text 15.5% past the right edge, S3 body text entirely outside the slide,
+  // and the S4 photo group made 4% taller so it runs past the bottom edge (decorative: reported as "beyond", not as overflow).
+  const mv = (from, to) => (xml) => { if (xml.split(from).length !== 2) throw new Error(`edit target not found exactly once: ${from}`); return xml.replace(from, to); };
+  const FM = (await analyseEdited(FOOD_FILE, {
+    'ppt/slides/slide2.xml': mv('<a:off x="8941058" y="5317102"/><a:ext cx="8318242" cy="2585085"/>', '<a:off x="12801600" y="5317102"/><a:ext cx="8318242" cy="2585085"/>'),
+    'ppt/slides/slide3.xml': mv('<a:off x="1028700" y="5703570"/><a:ext cx="7345542" cy="2956560"/>', '<a:off x="19000000" y="5703570"/><a:ext cx="7345542" cy="2956560"/>'),
+    'ppt/slides/slide4.xml': mv('<a:ext cx="9270863" cy="10058607"/>', '<a:ext cx="9270863" cy="10470087"/>'),
+  })).design;
+  const m = (n) => FM.slides[n - 1];
+  ok(m(2).offSlide === true && m(2).overflow.length === 1 && m(2).overflow[0].kind === 'text' && m(2).overflow[0].edges.join() === 'right' && near(m(2).overflow[0].byPct, 15.5, 0.5) && !m(2).overflow[0].outside && /^Lorem ipsum/.test(m(2).overflow[0].sample), `FOOD overflow: S2 text running 15.5% past the right edge is reported (${JSON.stringify(m(2).overflow)})`);
+  ok(m(3).offSlide === true && m(3).overflow[0].kind === 'text' && m(3).overflow[0].outside === true, `FOOD overflow: S3 text entirely outside the slide is reported (${JSON.stringify(m(3).overflow)})`);
+  ok(m(4).bleedDetail[0].kind === 'picture' && m(4).bleedDetail[0].mode === 'beyond' && m(4).bleedDetail[0].edges.join() === 'bottom' && near(m(4).bleedDetail[0].byPct, 4, 0.2) && !m(4).offSlide, `FOOD bleed: a photo made 4% taller runs past the bottom edge and is reported as \"beyond\" (${JSON.stringify(m(4).bleedDetail[0])})`);
+  const fo2 = finding(FM, 'content-overflow');
+  ok(FM.spacing.offSlideSlides === 2 && fo2?.severity === 'warn' && fo2.slides.join() === '2,3' && FM.spacing.bleedSlides === 12, `FOOD overflow: summary and the content-overflow finding name slides 2 and 3 only; bleed slides stay 12 (${FM.spacing.offSlideSlides} / ${fo2?.slides} / ${FM.spacing.bleedSlides})`);
+  ok(FD.slides.every((s, k) => [1, 2, 3].includes(k) || JSON.stringify(s) === JSON.stringify(FM.slides[k])), 'FOOD overflow: the three edits change slides 2-4 only; every other slide analyses exactly as before');
 } else console.log(`SKIPPED: FOOD.pptx checks (set FOOD_PPTX=/path/to/Brown_and_Green_Modern_Food_Presentation.pptx or copy it to tests/fixtures/FOOD.pptx)`);
 
 // ---------- contract ----------

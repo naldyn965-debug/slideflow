@@ -344,6 +344,21 @@ await page.click('main button:has-text("Delete project")');
 await page.click('.modal button:has-text("Delete project")');
 await page.waitForSelector('.empty');
 
+// ---------- Filmstrip titles ----------
+// p23-template-text: the brand name "Acme & Co." is the first text box of slides 2-10, so the parser's own title (first text box) is the brand. The filmstrip shows the analysed title.
+await page.goto(`${BASE}/index.html#/templates`);
+await page.waitForSelector('.dropzone');
+await upload('p23-template-text.pptx');
+await page.waitForSelector('#tpl-name');
+await page.fill('#tpl-name', 'Brand deck');
+await page.click('.modal >> text=Save to library');
+await page.waitForSelector('.tpl:has-text("Brand deck") .tpl-design');
+await page.click('.tpl:has-text("Brand deck") >> text=Preview');
+await page.waitForSelector('.film-item');
+const filmTitles = await page.locator('.film-t').allTextContents();
+ok(filmTitles.length === 10 && [0, 1, 2, 3, 9].map((i) => filmTitles[i]).join('|') === 'COVER|Upper title|Lower title at fifty three|Lowest title at sixty eight|Thank you', `filmstrip: slide titles come from the analysis (${filmTitles.join(' | ')})`);
+ok(!filmTitles.includes('Acme & Co.') && filmTitles[4] === 'No title' && filmTitles[5] === 'No title', 'filmstrip: the repeated brand name is never a title; a slide without a clear title says \"No title\"');
+
 // ---------- Not found + mobile ----------
 await page.goto(`${BASE}/index.html#/projects/does-not-exist`);
 await page.waitForSelector('text=Project not found');
