@@ -5,7 +5,8 @@ import { kid, kids, desc, readXml, readRels, xfrmOf, intoGroup, placeholderOf, n
 
 // v2 (Phase 2.1): colour-map overrides, per-shape backdrops for contrast, bleed-aware margins, background-aware classification.
 // v3 (Phase 2.2): rotation-aware geometry, decorative bleed vs content overflow, text-density/picture-role/structure-aware slide types.
-export const DESIGN_VERSION = 3;
+// v4 (Phase 2.5 Step 3): the point floors (Enhance sizes, small-text, low-body-size, large-text contrast class) scale with the slide size; see sizeScale().
+export const DESIGN_VERSION = 4;
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const FOOTER = new Set(['dt', 'ftr', 'sldNum']);
 const DEFAULT_CLRMAP = { bg1: 'lt1', tx1: 'dk1', bg2: 'lt2', tx2: 'dk2' };
@@ -19,6 +20,25 @@ const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y)
 const pctile = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * (s.length - 1) + 0.5))]; };
 const r1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
 const r2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
+
+// ---------- size-adaptive floors (v4) ----------
+// Every point floor below is written for a 13.333 x 7.5 in (16:9, 12192000 x 6858000 EMU) slide. A slide of another size holds proportionally larger
+// or smaller text, so each floor is multiplied by one factor s (approved formula, Phase 2.5 Step 3):
+//   wr = slide width / 12192000     hr = slide height / 6858000
+//   s  = clamp(min(max(wr, hr), 1.2 * sqrt(wr * hr)), 0.25, 4)
+// max(wr, hr) follows the larger dimension; the second term (geometric mean of the two ratios) keeps an extreme aspect ratio (banner, portrait) from
+// scaling by its long side alone. Contrast ratios (4.5:1 / 3:1) and margins (% of the slide) are already size-independent and are NOT scaled.
+const REF_W = 12192000; const REF_H = 6858000;
+export function sizeScale(W, H) {
+  if (!(W > 0) || !(H > 0)) return 1; // the parser rejects such sizes; never divide by zero here
+  const wr = W / REF_W; const hr = H / REF_H;
+  return Math.min(4, Math.max(0.25, Math.min(Math.max(wr, hr), 1.2 * Math.sqrt(wr * hr))));
+}
+/** The floors in points for one slide size, rounded to 0.1 pt (the precision run sizes are kept at). At 16:9 / 4:3 widths they equal the v3 constants. */
+export function sizeFloors(W, H) {
+  const s = sizeScale(W, H); const f = (pt) => r1(pt * s);
+  return { scale: s, body: f(16), title: f(28), footer: f(12), small: f(12), lowBody: f(14), large: f(18), largeBold: f(14) };
+}
 const topKey = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 const bump = (map, k, v = 1) => map.set(k, (map.get(k) || 0) + v);
 const tick = () => new Promise((r) => setTimeout(r));
@@ -674,6 +694,7 @@ export async function extractDesign(parsed) {
 function assemble(parsed, env, S) {
   const { width: W, height: H } = parsed;
   const A = W * H; const n = S.length;
+  const T = sizeFloors(W, H);
   const theme = S[0]?.cx.theme || env.firstMaster?.theme || EMPTY_THEME;
   const themeByHex = new Map(Object.entries(theme.colors).map(([k, v]) => [v, k]));
   const limitations = [
@@ -727,7 +748,7 @@ function assemble(parsed, env, S) {
         bump(ro.font, r.font, r.chars); bump(ro.sz, r.sz, r.chars); bump(ro.b, r.b, r.chars); bump(ro.color, r.hex, r.chars); ro.chars += r.chars;
         if (sh.role !== 'footer') {
           minPt = minPt == null ? r.sz : Math.min(minPt, r.sz); maxPt = maxPt == null ? r.sz : Math.max(maxPt, r.sz);
-          if (r.sz < 12) smallChars += r.chars;
+          if (r.sz < T.small) smallChars += r.chars;
         }
         if (sh.role === 'title') titleSz = r.sz;
         // Contrast is judged against what the text is really painted on (see backdropOf), with text alpha applied.
@@ -737,7 +758,7 @@ function assemble(parsed, env, S) {
           checked += r.chars;
           let best = null;
           for (const c of bd.hexes) { const t = over(r.hex, r.alpha, c); const ratio = contrast(t, c); if (!best || ratio > best.ratio) best = { ratio, text: t, background: c }; }
-          const large = r.sz >= 18 || (r.b && r.sz >= 14);
+          const large = r.sz >= T.large || (r.b && r.sz >= T.largeBold);
           if (best.ratio < (large ? 3 : 4.5) && (!worst || best.ratio < worst.ratio)) worst = { ratio: r2(best.ratio), text: best.text, background: best.background, sizePt: r.sz, sample: sh.text.slice(0, 30) };
         }
       }
@@ -843,7 +864,7 @@ function assemble(parsed, env, S) {
   }
 
   const bgDominant = topKey(bgColors);
-  const modes = buildModes({ typography, spacing, palette, theme, bgDominant, S, n, bgColors });
+  const modes = buildModes({ typography, spacing, palette, theme, bgDominant, S, n, bgColors, T });
   const design = {
     schema: 'slideflow.design', version: DESIGN_VERSION, analyzedAt: Date.now(),
     slide: { width: W, height: H, aspect: r2(W / H) },
@@ -860,7 +881,7 @@ function assemble(parsed, env, S) {
 }
 
 // ---------- modes ----------
-function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S, n }) {
+function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S, n, T }) {
   const r = t.roles;
   const firstFont = t.fonts[0]?.name || null;
   const observed = {
@@ -878,11 +899,12 @@ function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S,
     if (to != null && o[k] !== to) { changes.push({ token: path, from: o[k], to, reason }); e[k] = to; }
   };
   const body = observed.sizesPt.body;
-  if (body != null) set('sizesPt.body', Math.max(body, 16), 'Body text should be at least 16 pt to stay readable when projected.');
+  const scaled = (base) => (T.scale === 1 ? '' : ` The ${base} pt reference minimum is scaled x${r2(T.scale)} for this slide size.`);
+  if (body != null) set('sizesPt.body', Math.max(body, T.body), `Body text should be at least ${T.body} pt to stay readable when projected.${scaled(16)}`);
   const eb = enh.sizesPt.body;
-  if (observed.sizesPt.title != null) set('sizesPt.title', Math.max(observed.sizesPt.title, 28, eb != null ? Math.round(eb * 1.25) : 0), 'Titles should stay clearly larger than body text (at least 28 pt and 1.25x body).');
+  if (observed.sizesPt.title != null) set('sizesPt.title', Math.max(observed.sizesPt.title, T.title, eb != null ? Math.round(eb * 1.25) : 0), `Titles should stay clearly larger than body text (at least ${T.title} pt and 1.25x body).${scaled(28)}`);
   if (observed.sizesPt.subtitle != null && eb != null) set('sizesPt.subtitle', Math.max(observed.sizesPt.subtitle, eb), 'A subtitle should never be smaller than body text.');
-  if (observed.sizesPt.footer != null) set('sizesPt.footer', Math.max(observed.sizesPt.footer, 12), 'Footers and slide numbers stay at 12 pt or more.');
+  if (observed.sizesPt.footer != null) set('sizesPt.footer', Math.max(observed.sizesPt.footer, T.footer), `Footers and slide numbers stay at ${T.footer} pt or more.${scaled(12)}`);
   const floor = { left: 5, right: 5, top: 5, bottom: 4 };
   for (const k of Object.keys(floor)) if (observed.marginsPct[k] != null) set(`marginsPct.${k}`, r1(Math.max(observed.marginsPct[k], floor[k])), 'Outer margins are kept at the template median and never below a safe minimum, so every slide shares one frame.');
   if (observed.colors.text && observed.colors.background && contrast(observed.colors.text, observed.colors.background) < 4.5) {
@@ -893,8 +915,8 @@ function buildModes({ typography: t, spacing: sp, palette, theme, bgDominant, S,
   const findings = [];
   const add = (code, severity, message, slides = [], evidence) => findings.push({ code, severity, message, slides: slides.slice(0, 20), evidence });
   const small = S.filter((s) => s.smallChars > 0).map((s) => s.i + 1);
-  if (small.length) add('small-text', 'warn', 'Text under 12 pt is hard to read on a projector.', small);
-  if (t.sizes.length && body != null && body < 14) add('low-body-size', 'info', `The dominant body size is ${body} pt; 16 pt or more reads better on screen.`);
+  if (small.length) add('small-text', 'warn', `Text under ${T.small} pt is hard to read on a projector.${scaled(12)}`, small);
+  if (t.sizes.length && body != null && body < T.lowBody) add('low-body-size', 'info', `The dominant body size is ${body} pt; ${T.body} pt or more reads better on screen.${scaled(16)}`);
   const manyFonts = t.fonts.filter((f) => f.share >= 0.02);
   if (manyFonts.length > 2) add('many-fonts', 'warn', `${manyFonts.length} font families carry more than 2% of the text each (${manyFonts.map((f) => f.name).join(', ')}). Two is the usual limit.`);
   const off = palette.filter((c) => !c.slot && !c.neutral);

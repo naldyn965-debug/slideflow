@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { analyse, analyseEdited, DESIGN_VERSION } from './harness.mjs';
+import { analyse, analyseEdited, DESIGN_VERSION, contrast, sizeScale, sizeFloors } from './harness.mjs';
 const FX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL', m); } };
@@ -245,7 +245,7 @@ if (existsSync(FOOD_FILE)) {
 // ---------- contract ----------
 const nested = (v) => (Array.isArray(v) ? v.some((x) => Array.isArray(x) || nested(x)) : v && typeof v === 'object' ? Object.values(v).some(nested) : false);
 const all = [A, B, C, Dg, E, F, dark, dm, dx, S, PC, PA, PG, PB, T, ...(FD ? [FD] : [])];
-ok(all.every((d) => !nested(d) && d.version === DESIGN_VERSION && d.version === 3 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'JSON: Firestore-safe, versioned 2, small');
+ok(all.every((d) => !nested(d) && d.version === DESIGN_VERSION && d.version === 4 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'JSON: Firestore-safe, versioned (DESIGN_VERSION 4), small');
 const v1Keys = ['n', 'title', 'layout', 'layoutType', 'class', 'confidence', 'reasons', 'background', 'words', 'counts', 'imageCoverage', 'minPt', 'maxPt'];
 ok(all.every((d) => d.slides.every((s) => v1Keys.every((k) => k in s || s[k] === undefined) && ['title', 'section', 'text', 'image', 'comparison', 'chart-table', 'closing', 'other'].includes(s.class))), 'JSON: Phase 2 slide fields kept (changes are additive)');
 ok(all.every((d) => d.slides.every((s) => s.templateText === undefined || s.templateText.every((x) => ['brand', 'pageNumber'].includes(x.kind) && typeof x.text === 'string'))), 'JSON: templateText entries are additive and typed');
@@ -253,5 +253,187 @@ ok(['left', 'right', 'top', 'bottom'].every((k) => k in dark.spacing.marginsPct)
 ok(all.every((d) => d.slides.every((s) => (s.imageRoles === undefined || ['background', 'content', 'decorative'].every((k) => Number.isInteger(s.imageRoles[k]))) && (s.overflow === undefined || s.offSlide === true) && (s.bleedDetail === undefined || (s.bleed && s.bleedDetail.every((b) => ['picture', 'shape'].includes(b.kind) && ['flush', 'beyond'].includes(b.mode)))))), 'JSON: Phase 2.2 fields (imageRoles, bleedDetail, overflow) are additive and consistent with bleed / offSlide');
 const strip = (d) => JSON.stringify({ ...d, analyzedAt: 0 });
 ok(strip(await D('p21-dark-explicit.pptx')) === strip(dark), 'analysis is deterministic');
+
+// ---------- Phase 2.5 Step 2: Enhance rule coverage (tests and fixtures only; no production change) ----------
+// Audit item #1. Every rule in buildModes() gets a fixture that trips it and one where it must stay silent, Preserve -> Enhance differences must equal
+// Enhance.changes exactly, and Enhance must never lower a size or a margin. Fixtures: tests/make_fixture_p25.py.
+// Floors at the reference 13.333 x 7.5 in slide (scale 1; since DESIGN_VERSION 4 every point floor is multiplied by the size scale, see the Step 3 section):
+// body 16 pt; title max(28 pt, 1.25 x enhanced body); subtitle >= enhanced body; footer 12 pt; margins 5/5/5/4 % (never scaled); text colour 4.5:1 against the
+// dominant background (replacement: the better of the theme's dk1 / lt1).
+const FOODL = await D('p25-food-like.pptx');
+const ES = await D('p25-enh-sizes.pptx'); const ER = await D('p25-enh-title-ratio.pptx'); const EM = await D('p25-enh-margins.pptx');
+const ECL = await D('p25-enh-contrast-light.pptx'); const ECD = await D('p25-enh-contrast-dark.pptx'); const EF = await D('p25-enh-at-floors.pptx');
+const changeKeys = (d) => d.modes.enhance.changes.map((c) => c.token).sort().join();
+const chg = (d, token) => d.modes.enhance.changes.find((c) => c.token === token);
+const leaves = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => (v && typeof v === 'object' && !Array.isArray(v) ? leaves(v, `${pre}${k}.`) : [[`${pre}${k}`, v]]));
+const byToken = (a, b) => a.token.localeCompare(b.token);
+const diffOf = (d) => {
+  const a = Object.fromEntries(leaves(d.modes.preserve.tokens)); const b = Object.fromEntries(leaves(d.modes.enhance.tokens));
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k])).map((k) => ({ token: k, from: a[k], to: b[k] })).sort(byToken);
+};
+// Invariant: the token differences between Preserve and Enhance are exactly the listed changes (same token, same from, same to), each listed once.
+const diffMatchesChanges = (d) => {
+  const diff = diffOf(d); const ch = [...d.modes.enhance.changes].sort(byToken);
+  const keys = (t) => leaves(t).map(([k]) => k).sort().join();
+  return keys(d.modes.preserve.tokens) === keys(d.modes.enhance.tokens) && new Set(ch.map((c) => c.token)).size === ch.length && diff.length === ch.length
+    && diff.every((x, i) => x.token === ch[i].token && JSON.stringify(x.from) === JSON.stringify(ch[i].from) && JSON.stringify(x.to) === JSON.stringify(ch[i].to))
+    && ch.every((c) => JSON.stringify(c.from) !== JSON.stringify(c.to) && typeof c.reason === 'string' && c.reason.length > 0);
+};
+// Invariant: Enhance never lowers a size or a margin, never turns a missing value into one and never drops one.
+const neverLowers = (d) => ['sizesPt', 'marginsPct'].every((g) => Object.keys(d.modes.preserve.tokens[g]).every((k) => {
+  const p = d.modes.preserve.tokens[g][k]; const e = d.modes.enhance.tokens[g][k];
+  return p == null ? e == null : typeof e === 'number' && e >= p;
+})) && d.modes.enhance.changes.filter((c) => /^(sizesPt|marginsPct)\./.test(c.token)).every((c) => c.to > c.from);
+
+// FOOD-like deck, 20 x 11.25 in (scale 1.5). Step 2 pinned the v3 behaviour (absolute floors: a 21 pt body on a 20 in wide slide was left alone) and said the
+// expectation was meant to change once slide-size normalisation shipped. It has (DESIGN_VERSION 4): the body floor is 16 x 1.5 = 24 pt, so 21 -> 24 is the ONE change.
+const fp = FOODL.modes.preserve.tokens;
+ok(FOODL.slide.width === 18288000 && FOODL.slide.height === 10287000 && FOODL.slide.aspect === 1.78, `p25 FOOD-like: slide is 20 x 11.25 in (${FOODL.slide.width} x ${FOODL.slide.height} EMU)`);
+ok(cls(FOODL) === 'title,text,text,text,text,text,text,closing', `p25 FOOD-like: cover, 6 text slides, closing (${cls(FOODL)})`);
+ok(fp.sizesPt.title === 80 && fp.sizesPt.body === 21 && fp.sizesPt.subtitle === null && fp.sizesPt.footer === null && fp.fonts.heading === 'Inter Bold' && fp.fonts.body === 'Inter' && fp.colors.text === 'FFFFFF' && fp.colors.background === '211D19',
+  `p25 FOOD-like: Preserve tokens match the real deck (80/21 pt, Inter Bold / Inter, white on #211D19): ${JSON.stringify(fp.sizesPt)}`);
+const fm = FOODL.spacing.marginsPct;
+ok(near(fm.left, 5.6) && near(fm.right, 12.6) && near(fm.top, 5.1) && near(fm.bottom, 14.5), `p25 FOOD-like: template margins match the real deck 5.6/12.6/5.1/14.5 (${fm.left}/${fm.right}/${fm.top}/${fm.bottom})`);
+const bodyUp = (d) => d.modes.enhance.changes.length === 1 && d.modes.enhance.changes[0].token === 'sizesPt.body' && d.modes.enhance.changes[0].from === 21 && d.modes.enhance.changes[0].to === 24 && /at least 24 pt/.test(d.modes.enhance.changes[0].reason)
+  && diffOf(d).length === 1 && diffOf(d)[0].token === 'sizesPt.body' && diffOf(d)[0].from === 21 && diffOf(d)[0].to === 24;
+ok(bodyUp(FOODL) && FOODL.modes.enhance.tokens.sizesPt.title === 80 && JSON.stringify(FOODL.modes.enhance.tokens.marginsPct) === JSON.stringify(fm),
+  `p25 FOOD-like: the only Enhance change is body 21 -> 24 pt (the intended v4 change; title 80 pt and every margin already meet their floors) (${changeKeys(FOODL)})`);
+if (FD) {
+  ok(FD.slide.width === 18288000 && FD.slide.height === 10287000 && bodyUp(FD) && JSON.stringify(FD.modes.preserve.tokens.sizesPt) === JSON.stringify(fp.sizesPt) && JSON.stringify(FD.modes.preserve.tokens.marginsPct) === JSON.stringify(fm)
+    && JSON.stringify(FD.modes.enhance.tokens) === JSON.stringify(FOODL.modes.enhance.tokens),
+    'FOOD (real deck): the only Enhance change is body 21 -> 24 pt, its Preserve tokens equal the FOOD-like fixture (80/21 pt, same margins) and so do its Enhance tokens');
+} else console.log('SKIPPED: real-FOOD Enhance baseline (needs FOOD_PPTX or tests/fixtures/FOOD.pptx)');
+
+// One positive-path fixture per rule. The isolation check (exact list of changed tokens) proves each fixture trips only the rule it targets.
+ok(changeKeys(ES) === 'sizesPt.body,sizesPt.footer,sizesPt.subtitle,sizesPt.title', `p25 sizes: exactly the four size rules fire, no margin or colour change (${changeKeys(ES)})`);
+ok(chg(ES, 'sizesPt.body')?.from === 12 && chg(ES, 'sizesPt.body').to === 16 && /at least 16 pt/.test(chg(ES, 'sizesPt.body').reason), 'p25 body rule: 12 pt body is raised to 16 pt');
+ok(chg(ES, 'sizesPt.title')?.from === 20 && chg(ES, 'sizesPt.title').to === 28 && /28 pt/.test(chg(ES, 'sizesPt.title').reason), 'p25 title rule (28 pt floor): 20 pt title is raised to 28 pt');
+ok(ES.modes.preserve.tokens.sizesPt.subtitle >= ES.modes.preserve.tokens.sizesPt.body && chg(ES, 'sizesPt.subtitle')?.from === 14 && chg(ES, 'sizesPt.subtitle').to === 16 && chg(ES, 'sizesPt.subtitle').to === ES.modes.enhance.tokens.sizesPt.body,
+  'p25 subtitle rule: a 14 pt subtitle is not under the 12 pt body it has, yet is raised to 16 pt because it is compared with the ENHANCED body');
+ok(chg(ES, 'sizesPt.footer')?.from === 9 && chg(ES, 'sizesPt.footer').to === 12 && /12 pt/.test(chg(ES, 'sizesPt.footer').reason), 'p25 footer rule: 9 pt footer placeholder is raised to 12 pt');
+ok(changeKeys(ER) === 'sizesPt.title' && chg(ER, 'sizesPt.title')?.from === 30 && chg(ER, 'sizesPt.title').to === 35 && /1\.25x/.test(chg(ER, 'sizesPt.title').reason), `p25 title rule (1.25 x body): 30 pt title over 28 pt body becomes 35 pt and nothing else changes (${changeKeys(ER)})`);
+const em = ['left', 'top', 'right', 'bottom'].map((k) => chg(EM, `marginsPct.${k}`));
+ok(changeKeys(EM) === 'marginsPct.bottom,marginsPct.left,marginsPct.right,marginsPct.top' && em.every(Boolean) && em.map((c) => `${c.from}>${c.to}`).join() === '2>5,2>5,2>5,1>4', `p25 margin rules: 2/2/2/1 % become 5/5/5/4 % on all four sides, nothing else changes (${em.map((c) => c && `${c.from}>${c.to}`)})`);
+const cL = chg(ECL, 'colors.text'); const cD = chg(ECD, 'colors.text');
+const ratio = (c, bg) => (c ? `${contrast(c.to, bg).toFixed(1)}:1` : 'no change');   // safe in a failure message when the change is missing
+ok(changeKeys(ECL) === 'colors.text' && cL?.from === 'BBBBBB' && cL.to === ECL.theme.colors.dk1 && contrast('BBBBBB', 'FFFFFF') < 4.5 && contrast(cL.to, 'FFFFFF') >= 4.5, `p25 colour rule (light): #BBBBBB on white (${contrast('BBBBBB', 'FFFFFF').toFixed(2)}:1) becomes the theme dk1 #${cL?.to} (${ratio(cL, 'FFFFFF')})`);
+ok(changeKeys(ECD) === 'colors.text' && cD?.from === '444444' && cD.to === ECD.theme.colors.lt1 && contrast('444444', '211D19') < 4.5 && contrast(cD.to, '211D19') >= 4.5, `p25 colour rule (dark): #444444 on #211D19 (${contrast('444444', '211D19').toFixed(2)}:1) becomes the theme lt1 #${cD?.to} (${ratio(cD, '211D19')})`);
+// Boundary: every value exactly ON its floor is left alone (floors are minimums).
+const ef = EF.modes.preserve.tokens;
+ok(ef.sizesPt.body === 16 && ef.sizesPt.title === 28 && ef.sizesPt.subtitle === 16 && ef.sizesPt.footer === 12 && ef.marginsPct.left === 5 && ef.marginsPct.right === 5 && ef.marginsPct.top === 5 && ef.marginsPct.bottom === 4, `p25 at-floors: the fixture really sits on every floor (${JSON.stringify(ef.sizesPt)} ${JSON.stringify(ef.marginsPct)})`);
+ok(EF.modes.enhance.changes.length === 0 && diffOf(EF).length === 0, 'p25 at-floors: nothing changes when every value is exactly at its floor');
+
+// Invariants over every design this suite analyses plus extra fixtures that trip rules.
+const INV = [...all, FOODL, ES, ER, EM, ECL, ECD, EF, await D('wide.pptx'), await D('standard43.pptx'), await D('p21-style-layout-map.pptx'), await D('p22-geometry.pptx'), await D('p22-artwork.pptx')];
+const failing = (pred) => INV.map((d, i) => [d, i]).filter(([d]) => !pred(d)).map(([, i]) => i);
+ok(failing(diffMatchesChanges).length === 0, `INVARIANT: Preserve -> Enhance token differences are exactly Enhance.changes (token, from, to; each once) on ${INV.length} designs (failing: ${failing(diffMatchesChanges)})`);
+ok(failing(neverLowers).length === 0, `INVARIANT: Enhance never lowers a size or margin, never adds or drops one, and every size/margin change goes up, on ${INV.length} designs (failing: ${failing(neverLowers)})`);
+ok(INV.filter((d) => d.modes.enhance.changes.some((c) => /^sizesPt\./.test(c.token))).length >= 3, 'INVARIANT is not vacuous: at least 3 designs have a size raised');
+const fired = [...new Set(INV.flatMap((d) => d.modes.enhance.changes.map((c) => c.token)))].sort().join();
+ok(fired === 'colors.text,marginsPct.bottom,marginsPct.left,marginsPct.right,marginsPct.top,sizesPt.body,sizesPt.footer,sizesPt.subtitle,sizesPt.title',
+  `COVERAGE tripwire: every Enhance token rule fires on at least one fixture and none else exists (${fired}). A new rule must come with a fixture and be added here`);
+// The invariants are able to fail: a tampered copy must be rejected.
+const tamper = (d, f) => { const c = JSON.parse(JSON.stringify(d)); f(c); return c; };
+ok(!neverLowers(tamper(ES, (c) => { c.modes.enhance.tokens.sizesPt.body = 10; })) && !neverLowers(tamper(ES, (c) => { c.modes.enhance.tokens.sizesPt.footer = null; })) && !neverLowers(tamper(EM, (c) => { c.modes.enhance.tokens.marginsPct.left = 1; })), 'INVARIANT self-check: neverLowers rejects a lowered size, a dropped size and a lowered margin');
+ok(!diffMatchesChanges(tamper(ES, (c) => { c.modes.enhance.changes.pop(); })) && !diffMatchesChanges(tamper(ES, (c) => { c.modes.enhance.tokens.sizesPt.title = 99; })) && !diffMatchesChanges(tamper(ES, (c) => { if (c.modes.enhance.changes[0]) c.modes.enhance.changes[0].to = 17; })), 'INVARIANT self-check: diffMatchesChanges rejects a missing change, an unlisted token difference and a wrong value');
+ok([FOODL, ES, ER, EM, ECL, ECD, EF].every((d) => !nested(d) && d.version === DESIGN_VERSION && d.version === 4 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'p25 fixtures: Firestore-safe design JSON, DESIGN_VERSION is 4');
+// ---------- Phase 2.5 Step 3: size-adaptive floors (DESIGN_VERSION 4) ----------
+// Every POINT floor is multiplied by s = clamp(min(max(wr, hr), 1.2 * sqrt(wr * hr)), 0.25, 4), wr = width / 12192000, hr = height / 6858000, and rounded to
+// 0.1 pt: body 16, title 28, footer 12, small-text 12, low-body-size 14, large text 18 pt (large bold 14 pt). NOT scaled: margins (a share of the slide), the
+// title = 1.25 x body ratio, the 4.5:1 / 3:1 contrast ratios. Every expected value below is a hard-coded literal from an independent calculation (Python),
+// never taken from the production function. Fixtures: tests/make_fixture_p25s3.py.
+const nearTo = (a, b) => Math.abs(a - b) < 1e-6;
+const FXP = (n) => path.join(FX, n);
+const chs = (d) => d.modes.enhance.changes.map((c) => `${c.token}:${c.from}>${c.to}`).sort().join();
+const lowAt = (d) => finding(d, 'low-contrast')?.slides.join();
+
+// 1. The scale. [width, height, s]
+const SCALES = [[12192000, 6858000, 1], [9144000, 6858000, 1], [9144000, 5143500, 0.75], [6096000, 3429000, 0.5], [18288000, 10287000, 1.5],
+  [24384000, 6858000, 1.697056], [6858000, 9906000, 1.081665], [1219200, 685800, 0.25], [60000000, 40000000, 4]];
+ok(SCALES.every(([w, h, e]) => nearTo(sizeScale(w, h), e)), `p25s3 scale: ${SCALES.map(([w, h]) => `${w}x${h}=${sizeScale(w, h).toFixed(6)}`).join(' ')}`);
+ok(sizeScale(12192000, 6858000) === 1 && sizeScale(9144000, 6858000) === 1 && sizeScale(18288000, 10287000) === 1.5 && sizeScale(6096000, 3429000) === 0.5, 'p25s3 scale: 16:9 and 4:3 (13.33 / 10 in wide) are exactly 1, FOOD size exactly 1.5, half size exactly 0.5');
+ok(sizeScale(24384000, 6858000) < 2 && sizeScale(6858000, 9906000) < 9906000 / 6858000, 'p25s3 scale: when wr and hr differ the 1.2 x sqrt(wr x hr) term decides (32:9 banner 1.70 < 2, portrait 1.08 < 1.44)');
+ok([0.3, 0.5, 0.75, 1, 1.25, 1.5, 2, 3.5].every((k) => nearTo(sizeScale(k * 12192000, k * 6858000), k)), 'p25s3 scale: for a uniformly scaled 16:9 slide (wr = hr) the scale is that factor (the second term never binds)');
+ok(sizeScale(1219200, 685800) === 0.25 && sizeScale(60000000, 40000000) === 4 && sizeScale(0, 0) === 1 && sizeScale(NaN, 5) === 1 && sizeScale(undefined, undefined) === 1, 'p25s3 scale: clamped to 0.25 and 4; a missing or zero size falls back to 1');
+{ let prev = 0; let mono = true; for (let w = 1000000; w <= 80000000; w = Math.round(w * 1.07)) { const v = sizeScale(w, 6858000); if (v < prev) mono = false; prev = v; } ok(mono, 'p25s3 scale: never decreases as the slide gets wider'); }
+
+// 2. The floors in points. [width, height, body, title, footer, small-text, low-body-size, large, large-bold]
+const FLOORS = { 'small 0.5': [6096000, 3429000, 8, 14, 6, 6, 7, 9, 7], '10 x 5.625 in 0.75': [9144000, 5143500, 12, 21, 9, 9, 10.5, 13.5, 10.5], 'standard 16:9 1': [12192000, 6858000, 16, 28, 12, 12, 14, 18, 14],
+  'standard 4:3 1': [9144000, 6858000, 16, 28, 12, 12, 14, 18, 14], 'large 1.5': [18288000, 10287000, 24, 42, 18, 18, 21, 27, 21], 'mixed wide 1.697': [24384000, 6858000, 27.2, 47.5, 20.4, 20.4, 23.8, 30.5, 23.8],
+  'mixed tall 1.082': [6858000, 9906000, 17.3, 30.3, 13, 13, 15.1, 19.5, 15.1], 'clamp low 0.25': [1219200, 685800, 4, 7, 3, 3, 3.5, 4.5, 3.5], 'clamp high 4': [60000000, 40000000, 64, 112, 48, 48, 56, 72, 56] };
+for (const [name, [w, h, ...e]] of Object.entries(FLOORS)) {
+  const f = sizeFloors(w, h); const got = [f.body, f.title, f.footer, f.small, f.lowBody, f.large, f.largeBold];
+  ok(got.join() === e.join(), `p25s3 floors (${name}): body/title/footer/small/low-body/large/large-bold = ${e.join(' / ')} (${got.join(' / ')})`);
+}
+
+// 3. Fixtures: slide size, Enhance changes and findings per size class
+const S3 = {};
+for (const n of ['small', 'small-at-floors', 'small-contrast', 'standard', 'standard-contrast', 'large', 'large-at-floors', 'large-contrast', 'large-margins', 'mixed-wide', 'mixed-wide-at-floors', 'mixed-wide-contrast', 'mixed-tall']) S3[n] = await D(`p25-s3-${n}.pptx`);
+const DIMS = { small: '6096000x3429000', standard: '12192000x6858000', large: '18288000x10287000', 'mixed-wide': '24384000x6858000', 'mixed-tall': '6858000x9906000' };
+ok(Object.entries(DIMS).every(([n, v]) => [n, `${n}-at-floors`, `${n}-contrast`, `${n}-margins`].filter((k) => S3[k]).every((k) => `${S3[k].slide.width}x${S3[k].slide.height}` === v)), 'p25s3 fixtures have the intended slide sizes (6.67x3.75, 13.33x7.5, 20x11.25, 26.67x7.5, 7.5x10.83 in)');
+const SIZES = {   // every size rule fires; expected changes, then [small-text slides or undefined, low-body-size present]
+  small: ['sizesPt.body:6>8,sizesPt.footer:4>6,sizesPt.subtitle:7>8,sizesPt.title:10>14', undefined, true, '{"title":10,"subtitle":7,"body":6,"footer":4}', 'under 6 pt', '8 pt or more'],
+  standard: ['sizesPt.body:11>16,sizesPt.footer:9>12,sizesPt.subtitle:14>16,sizesPt.title:20>28', '1,2,3', true, '{"title":20,"subtitle":14,"body":11,"footer":9}', 'under 12 pt', '16 pt or more'],
+  large: ['sizesPt.body:16>24,sizesPt.footer:14>18,sizesPt.subtitle:22>24,sizesPt.title:36>42', '1,2,3', true, '{"title":36,"subtitle":22,"body":16,"footer":14}', 'under 18 pt', '24 pt or more'],
+  'mixed-wide': ['sizesPt.body:20>27.2,sizesPt.footer:14>20.4,sizesPt.subtitle:22>27.2,sizesPt.title:36>47.5', '1,2,3', true, '{"title":36,"subtitle":22,"body":20,"footer":14}', 'under 20.4 pt', '27.2 pt or more'],
+  'mixed-tall': ['sizesPt.body:14>17.3,sizesPt.footer:10>13,sizesPt.subtitle:15>17.3,sizesPt.title:24>30.3', undefined, true, '{"title":24,"subtitle":15,"body":14,"footer":10}', null, '17.3 pt or more'],
+};
+for (const [n, [changes, smallSlides, lowBody, preserved, smallMsg, lowMsg]] of Object.entries(SIZES)) {
+  const d = S3[n];
+  ok(JSON.stringify(d.modes.preserve.tokens.sizesPt) === preserved && chs(d) === changes, `p25s3 ${n}: Preserve ${preserved}; Enhance changes exactly ${changes} (${chs(d)})`);
+  ok(finding(d, 'small-text')?.slides.join() === smallSlides && (smallSlides === undefined || finding(d, 'small-text')?.message.includes(smallMsg)), `p25s3 ${n}: small-text ${smallSlides ? `flags slides ${smallSlides} (${smallMsg})` : 'does not fire'} (${finding(d, 'small-text')?.slides.join() ?? 'none'})`);
+  ok(!!finding(d, 'low-body-size') === lowBody && finding(d, 'low-body-size')?.message.includes(lowMsg), `p25s3 ${n}: low-body-size fires and names the scaled ${lowMsg} (${finding(d, 'low-body-size')?.message})`);
+}
+ok(/at least 24 pt/.test(chg(S3.large, 'sizesPt.body')?.reason) && /at least 42 pt and 1\.25x body/.test(chg(S3.large, 'sizesPt.title')?.reason) && /18 pt or more/.test(chg(S3.large, 'sizesPt.footer')?.reason) && /scaled x1\.5 for this slide size/.test(chg(S3.large, 'sizesPt.body')?.reason),
+  'p25s3 large: change reasons state the scaled floors (24 / 42 / 18 pt) and the 1.5 scale');
+ok(!/scaled/.test(chg(S3.standard, 'sizesPt.body')?.reason) && /at least 16 pt/.test(chg(S3.standard, 'sizesPt.body')?.reason) && /at least 28 pt/.test(chg(S3.standard, 'sizesPt.title')?.reason) && /12 pt/.test(chg(S3.standard, 'sizesPt.footer')?.reason), 'p25s3 standard: scale 1 keeps the v3 wording and numbers, with no scale note');
+ok(chg(S3['mixed-wide'], 'sizesPt.title')?.to === 47.5 && 27.2 * 1.25 < 47.5, 'p25s3 mixed-wide: the 47.5 pt title floor (28 x 1.697, 0.1 pt precision) decides, not 1.25 x the 27.2 pt body');
+
+// 4. A value exactly ON a scaled floor is left alone; 0.1 pt under it fires (small, large and the fractional mixed-wide floors)
+const AT = { small: ['{"title":14,"subtitle":8,"body":8,"footer":6}'], large: ['{"title":42,"subtitle":24,"body":24,"footer":18}'], 'mixed-wide': ['{"title":47.5,"subtitle":27.2,"body":27.2,"footer":20.4}'] };
+for (const [n, [sizes]] of Object.entries(AT)) {
+  const d = S3[`${n}-at-floors`]; const m = d.modes.preserve.tokens.marginsPct;
+  ok(JSON.stringify(d.modes.preserve.tokens.sizesPt) === sizes && m.left === 5 && m.right === 5 && m.top === 5 && m.bottom === 4, `p25s3 ${n} at floors: the fixture sits exactly on every scaled floor ${sizes} and the 5/5/5/4 margins`);
+  ok(d.modes.enhance.changes.length === 0 && d.modes.enhance.findings.length === 0 && diffOf(d).length === 0, `p25s3 ${n} at floors: nothing changes and no finding fires (a floor is a minimum)`);
+}
+const under = await analyseEdited(FXP('p25-s3-mixed-wide-at-floors.pptx'), Object.fromEntries([1, 2, 3].map((i) => [`ppt/slides/slide${i}.xml`, (x) => x.replaceAll('sz="4750"', 'sz="4740"').replaceAll('sz="2720"', 'sz="2710"').replaceAll('sz="2040"', 'sz="2030"')])));
+ok(chs(under.design) === 'sizesPt.body:27.1>27.2,sizesPt.footer:20.3>20.4,sizesPt.subtitle:27.1>27.2,sizesPt.title:47.4>47.5', `p25s3 mixed-wide: 0.1 pt under each scaled floor raises all four (${chs(under.design)})`);
+const smallAt = async (sz) => (await analyseEdited(FXP('p25-s3-mixed-wide.pptx'), Object.fromEntries([1, 2, 3].map((i) => [`ppt/slides/slide${i}.xml`, (x) => x.replaceAll('sz="2000"', `sz="${sz}"`)])))).design;
+ok(finding(await smallAt(2030), 'small-text')?.slides.join() === '1,2,3' && finding(await smallAt(2040), 'small-text') === undefined, 'p25s3 mixed-wide: small-text boundary is the scaled 20.4 pt (20.3 pt flagged, 20.4 pt not)');
+const ratioEdit = await analyseEdited(FXP('p25-s3-large-at-floors.pptx'), Object.fromEntries([1, 2, 3].map((i) => [`ppt/slides/slide${i}.xml`, (x) => x.replaceAll('sz="2400"', 'sz="4000"')])));
+ok(chs(ratioEdit.design) === 'sizesPt.title:42>50', `p25s3 large: the 1.25 x body title ratio is not scaled (40 pt body makes a 42 pt title 50 pt; the scaled 42 pt floor alone would not) (${chs(ratioEdit.design)})`);
+
+// 5. Margins are a share of the slide: never scaled
+const lm = S3['large-margins']; const lmm = ['left', 'top', 'right', 'bottom'].map((k) => chg(lm, `marginsPct.${k}`));
+ok(chs(lm) === 'marginsPct.bottom:1>4,marginsPct.left:2>5,marginsPct.right:2>5,marginsPct.top:2>5' && lmm.every(Boolean) && lmm.map((c) => `${c.from}>${c.to}`).join() === '2>5,2>5,2>5,1>4', `p25s3 large (scale 1.5): margins still 2/2/2/1 % -> 5/5/5/4 %, not scaled, and no size changes (${chs(lm)})`);
+
+// 6. Contrast: slide 2 and 4 of each deck sit just under the scaled large-text boundary; ratios stay 4.5:1 / 3:1
+const CON = { small: ['ok,low,ok,low', '[8.5,6.5]', 10], standard: ['ok,low,ok,low', '[17,13]', 18], large: ['ok,low,ok,low', '[24,20]', 27], 'mixed-wide': ['ok,low,ok,low', '[30,23.5]', 30.5] };
+for (const [n, [statuses, sizes, bound]] of Object.entries(CON)) {
+  const d = S3[`${n}-contrast`]; const f = finding(d, 'low-contrast');
+  ok(d.slides.map((x) => x.contrast.status).join() === statuses && lowAt(d) === '2,4' && JSON.stringify(f?.evidence.map((e) => e.sizePt)) === sizes && f?.evidence.every((e) => e.ratio === 4.48),
+    `p25s3 contrast (${n}): flagged slides 2 and 4 (sizes ${sizes}) around the scaled large-text boundary ${bound} pt (${d.slides.map((x) => x.contrast.status)})`);
+}
+ok(contrast('777777', 'FFFFFF') < 4.5 && contrast('777777', 'FFFFFF') >= 3, 'p25s3 contrast: the grey really is between 3:1 and 4.5:1, so only the large-text classification can decide');
+ok(S3['large-contrast'].slides[1].contrast.status === 'low' && finding(S3['large-contrast'], 'low-contrast')?.evidence[0].sizePt === 24 && 24 >= 18, 'p25s3 contrast (large): 24 pt is "large" on a standard slide but normal text on a 20 in slide, so it is judged at 4.5:1');
+ok(S3['small-contrast'].slides[0].contrast.status === 'ok' && finding(S3['small-contrast'], 'low-contrast')?.slides.indexOf(1) === -1, 'p25s3 contrast (small): 10 pt is normal text on a standard slide but "large" on a 6.67 in slide, so it is judged at 3:1 and passes');
+const recolor = async (name, hex) => (await analyseEdited(FXP(`p25-s3-${name}.pptx`), Object.fromEntries([1, 2, 3, 4].map((i) => [`ppt/slides/slide${i}.xml`, (x) => x.replaceAll('777777', hex)])))).design;
+for (const n of ['small', 'large', 'mixed-wide']) {
+  const pass45 = await recolor(`${n}-contrast`, '767676'); const mid = await recolor(`${n}-contrast`, '888888'); const bad = await recolor(`${n}-contrast`, 'AAAAAA');
+  ok(contrast('767676', 'FFFFFF') >= 4.5 && lowAt(pass45) === undefined, `p25s3 contrast (${n}): 4.54:1 passes everywhere, the 4.5:1 limit is unchanged`);
+  ok(contrast('888888', 'FFFFFF') >= 3 && contrast('888888', 'FFFFFF') < 4.5 && lowAt(mid) === '2,4', `p25s3 contrast (${n}): 3.55:1 passes as large text only (flags slides 2 and 4), so 3:1 and 4.5:1 are unchanged (${lowAt(mid)})`);
+  ok(contrast('AAAAAA', 'FFFFFF') < 3 && lowAt(bad) === '1,2,3,4', `p25s3 contrast (${n}): 2.32:1 fails even as large text (all four slides), the 3:1 limit is unchanged (${lowAt(bad)})`);
+}
+
+// 7. Real-world consequence of the approved formula: PptxGenJS's 10 x 5.625 in default has scale 0.75, so its 10 pt footer (floor 9 pt) is no longer raised
+ok(Dg.slide.width === 9144000 && Dg.slide.height === 5143500 && Dg.typography.roles.footer?.sizePt === 10 && !chg(Dg, 'sizesPt.footer') && Dg.modes.enhance.tokens.sizesPt.footer === 10, 'p25s3 pptxgenjs (10 x 5.625 in, scale 0.75): the 10 pt footer is above the 9 pt floor and stays (v3 raised it to 12)');
+
+// 8. Invariants and compatibility over every new fixture
+const NEW = Object.values(S3);
+ok(NEW.every(diffMatchesChanges) && NEW.every(neverLowers), `INVARIANT (Step 3): Preserve -> Enhance differences equal Enhance.changes, and nothing is lowered, on all ${NEW.length} new fixtures`);
+ok(NEW.every((d) => !nested(d) && d.version === DESIGN_VERSION && d.version === 4 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'p25s3 fixtures: Firestore-safe design JSON, DESIGN_VERSION is 4');
+ok(NEW.every((d) => ['left', 'right', 'top', 'bottom'].every((k) => k in d.spacing.marginsPct) && 'slide' in d && 'modes' in d && 'limitations' in d && d.slides.every((x) => 'class' in x && 'contrast' in x)), 'p25s3 fixtures: design JSON keeps the Phase 2 top-level and per-slide shape (additive compatibility)');
+ok(strip(await D('p25-s3-mixed-wide.pptx')) === strip(S3['mixed-wide']), 'p25s3: analysis of a scaled slide is deterministic');
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

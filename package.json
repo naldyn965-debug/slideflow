@@ -6,7 +6,7 @@
   "description": "SlideFlow Phases 1-2.2: dashboard, PPTX templates, parser, template design analysis (Phase 2.2: slide types and geometry). No build step.",
   "scripts": {
     "start": "python3 -m http.server 8765",
-    "fixtures": "python3 tests/make_fixtures.py && python3 tests/make_fixtures_p2.py && python3 tests/make_fixture_p21.py && python3 tests/make_fixture_p22.py && python3 tests/make_fixture_p23.py",
+    "fixtures": "python3 tests/make_fixtures.py && python3 tests/make_fixtures_p2.py && python3 tests/make_fixture_p21.py && python3 tests/make_fixture_p22.py && python3 tests/make_fixture_p23.py && python3 tests/make_fixture_p25.py && python3 tests/make_fixture_p25s3.py",
     "test": "node tests/e2e.mjs",
     "test:analysis": "node tests/analysis.mjs"
   },

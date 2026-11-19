@@ -14,7 +14,7 @@ globalThis.Node = win.Node;
 { const mod = { exports: {} }; new Function('module', 'exports', await readFile(path.join(root, 'vendor/jszip.min.js'), 'utf8'))(mod, mod.exports); globalThis.JSZip = mod.exports; }
 const { parsePptx } = await import(path.join(root, 'js/pptx/parser.js'));
 const design = await import(path.join(root, 'js/pptx/design.js'));
-export const { extractDesign, DESIGN_VERSION, contrast } = design;
+export const { extractDesign, DESIGN_VERSION, contrast, sizeScale, sizeFloors } = design;
 export async function analyse(file) {
   const buf = await readFile(file);
   const parsed = await parsePptx(new Uint8Array(buf));

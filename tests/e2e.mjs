@@ -104,7 +104,11 @@ ok(A.modes.enhance.findings.find((f) => f.code === 'low-contrast')?.slides.join(
 ok(A.recurring.some((r) => r.kind === 'image' && r.count === 4), 'design A: recurring logo found on 4 slides');
 ok(A.patterns.some((p) => p.slides.join() === '3,4' && p.class === 'text'), 'design A: repeated layout pattern found (slides 3, 4)');
 ok(A.layouts.list.some((l) => l.name === 'Title and Content' && l.used === 3) && A.layouts.masters.length === 1, 'design A: layouts and masters with usage counts');
-ok(A.modes.enhance.tokens.sizesPt.footer === null || A.modes.enhance.tokens.sizesPt.footer >= 12, 'design A: enhance never lowers a size');
+// Enhance never lowers a size: every size token is compared with Preserve (a missing size stays missing, a present one only goes up), and every listed size change goes up.
+const sizesNeverLowered = (d) => ['title', 'subtitle', 'body', 'footer'].every((k) => { const p = d.modes.preserve.tokens.sizesPt[k]; const e = d.modes.enhance.tokens.sizesPt[k]; return p == null ? e == null : typeof e === 'number' && e >= p; })
+  && d.modes.enhance.changes.filter((c) => c.token.startsWith('sizesPt.')).every((c) => c.to > c.from);
+ok(sizesNeverLowered(A), 'design A: enhance never lowers a size (title, subtitle, body and footer checked against Preserve)');
+ok(!sizesNeverLowered({ modes: { preserve: A.modes.preserve, enhance: { tokens: { sizesPt: { ...A.modes.enhance.tokens.sizesPt, body: 1 } }, changes: [] } } }), 'design A: the never-lowers check can fail (a lowered body size is rejected)');
 
 const B = await design('p2-explicit.pptx');
 const mg = B.spacing.marginsPct;
@@ -122,7 +126,13 @@ ok(cls(C) === 'title,text,closing', `design C: Arabic closing wording detected (
 const D = await design('p2-pptxgenjs.pptx');
 ok(cls(D) === 'title,text,chart-table,chart-table,closing', `design D (pptxgenjs): classes (${cls(D)})`);
 ok(D.palette.colors.some((c) => c.hex === '0B6E4F') && D.layouts.list.some((l) => l.name === 'BRAND' && l.decor >= 1), 'design D (pptxgenjs): colours and fixed layout shapes found');
-ok(D.typography.roles.footer?.sizePt === 10 && D.modes.enhance.changes.some((c) => c.token === 'sizesPt.footer' && c.to === 12), 'design D (pptxgenjs): footer role and Smart Enhance change');
+ok(D.slide.width === 9144000 && D.slide.height === 5143500 && D.typography.roles.footer?.sizePt === 10 && !D.modes.enhance.changes.some((c) => c.token === 'sizesPt.footer'), 'design D (pptxgenjs): footer role found; on a 10 x 5.625 in slide (size scale 0.75) the 10 pt footer is above the 9 pt footer floor, so Smart Enhance leaves it (v3 raised it to 12)');
+ok(sizesNeverLowered(D) && D.modes.preserve.tokens.sizesPt.footer === 10 && D.modes.enhance.tokens.sizesPt.footer === 10, 'design D (pptxgenjs): enhance leaves the footer at 10 pt and lowers nothing');
+// Smart Enhance still raises sizes in the browser (this was D's footer in v3): a standard 13.33 x 7.5 in deck (scale 1) keeps the v3 floors 16 / 28 / 12 pt, a 20 x 11.25 in deck (scale 1.5) uses 24 / 42 / 18 pt
+const S1 = await design('p25-s3-standard.pptx'); const S15 = await design('p25-s3-large.pptx');
+const ch = (d) => d.modes.enhance.changes.map((c) => `${c.token}:${c.from}>${c.to}`).sort().join();
+ok(ch(S1) === 'sizesPt.body:11>16,sizesPt.footer:9>12,sizesPt.subtitle:14>16,sizesPt.title:20>28' && sizesNeverLowered(S1), `design size scale 1 (13.33 x 7.5 in): Smart Enhance raises body 11 > 16, title 20 > 28, subtitle 14 > 16, footer 9 > 12 and lowers nothing (${ch(S1)})`);
+ok(ch(S15) === 'sizesPt.body:16>24,sizesPt.footer:14>18,sizesPt.subtitle:22>24,sizesPt.title:36>42' && sizesNeverLowered(S15), `design size scale 1.5 (20 x 11.25 in): the same rules use floors 24 / 42 / 18 pt (${ch(S15)})`);
 
 const E = await design('p2-no-theme.pptx');
 ok(E.theme.name === null && E.limitations.some((l) => /No theme part/.test(l)) && E.typography.fonts[0].name === 'Arial', 'design E: missing theme is reported, explicit data still extracted');
@@ -140,8 +150,8 @@ const nested = (v) => Array.isArray(v) ? v.some((x) => Array.isArray(x) || neste
 const P22C = await design('p22-classes.pptx'); const P22G = await design('p22-geometry.pptx'); const P22B = await design('p22-bleed-everywhere.pptx');
 ok(cls(P22C) === 'title,text,text,comparison,comparison,comparison,text,text,text,image,image,image,text,text,closing', `p22 design: two columns alone are not a comparison, a picture beside a paragraph is not an image slide (${cls(P22C)})`);
 ok(P22G.slides.map((s) => (s.offSlide ? 1 : 0)).join('') === '001100100110' && P22B.spacing.bleedSlides === 5 && P22B.spacing.offSlideSlides === 0, 'p22 design: content overflow (table, chart, text) is reported apart from decorative bleed, which is not overflow');
-const all = [A, B, C, D, E, F, G, P22C, P22G, P22B];
-ok(all.every((d) => !nested(d) && d.version === 3 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'design: JSON is Firestore-safe (no nested arrays), versioned, small');
+const all = [A, B, C, D, E, F, G, P22C, P22G, P22B, S1, S15];
+ok(all.every((d) => !nested(d) && d.version === 4 && d.schema === 'slideflow.design' && JSON.stringify(d).length < 100000), 'design: JSON is Firestore-safe (no nested arrays), versioned, small');
 ok(all.every((d) => d.slides.every((s) => ['title', 'section', 'text', 'image', 'comparison', 'chart-table', 'closing', 'other'].includes(s.class))), 'design: every slide has a valid class');
 const A2 = await design('p2-corporate.pptx');
 const strip = (d) => JSON.stringify({ ...d, analyzedAt: 0, _ms: 0 });
@@ -313,7 +323,7 @@ const legacy = await page.evaluate(async () => {
   const db = await new Promise((res) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); });
   return new Promise((res) => { const g = db.transaction('templates').objectStore('templates').get('legacy-1'); g.onsuccess = () => res(g.result); });
 });
-ok(legacy.id === 'legacy-1' && legacy.name === 'Legacy deck' && legacy.size > 0 && legacy.createdAt === 1000 && legacy.updatedAt === 1000 && legacy.design?.version === 3 && legacy.designVersion === 3, 'p2 legacy: id and Phase 1 fields preserved, analysis cached, library order untouched');
+ok(legacy.id === 'legacy-1' && legacy.name === 'Legacy deck' && legacy.size > 0 && legacy.createdAt === 1000 && legacy.updatedAt === 1000 && legacy.design?.version === 4 && legacy.designVersion === 4, 'p2 legacy: id and Phase 1 fields preserved, analysis cached, library order untouched');
 
 // Stale analysis version -> re-analysed automatically
 await page.evaluate(async () => {
@@ -329,6 +339,28 @@ await page.waitForSelector('.film-item');
 await page.keyboard.press('Escape');
 await page.waitForSelector('.tpl:has-text("Legacy deck") .sw');
 ok(true, 'p2 legacy: outdated analysis is replaced automatically');
+
+// A design saved by the previous engine (DESIGN_VERSION 3, before size-adaptive floors) is re-analysed with the current one and saved over it; the template itself is untouched
+const readLegacy = () => page.evaluate(async () => {
+  const db = await new Promise((res) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); });
+  return new Promise((res) => { const g = db.transaction('templates').objectStore('templates').get('legacy-1'); g.onsuccess = () => res(g.result); });
+});
+await page.evaluate(async () => {
+  const db = await new Promise((res) => { const r = indexedDB.open('slideflow-local', 1); r.onsuccess = () => res(r.result); });
+  const tx = db.transaction('templates', 'readwrite'); const st = tx.objectStore('templates');
+  const g = st.get('legacy-1'); g.onsuccess = () => { const v = g.result; v.designVersion = 3; v.design = { stale: true, version: 3 }; st.put(v); };
+  await new Promise((r) => { tx.oncomplete = r; });
+});
+ok((await readLegacy()).designVersion === 3, 'p2 legacy v3: the stored analysis is marked as made by the previous engine (3)');
+await page.reload();
+await page.waitForSelector('.tpl:has-text("Legacy deck")');
+await page.click('.tpl:has-text("Legacy deck") .tpl-actions button >> nth=0');
+await page.waitForSelector('.film-item');
+await page.keyboard.press('Escape');
+await page.waitForSelector('.tpl:has-text("Legacy deck") .sw');
+const upgraded = await readLegacy();
+ok(upgraded.designVersion === 4 && upgraded.design?.version === 4 && upgraded.design.stale === undefined && upgraded.design.schema === 'slideflow.design' && upgraded.id === 'legacy-1' && upgraded.name === 'Legacy deck' && upgraded.createdAt === 1000 && upgraded.updatedAt === 1000,
+  'p2 legacy v3: a design saved at version 3 is re-analysed and saved as version 4; id, name and dates are untouched');
 
 // Projects carry the mode
 await page.click('nav >> text=Projects');
