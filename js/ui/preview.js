@@ -58,6 +58,7 @@ export async function openPreview(ctx, t, { onChange } = {}) {
       if (!sh.box) continue;
       const el = h('div', { class: `shp ${sh.kind}${sh.placeholder === 'title' ? ' is-title' : ''}`, title: sh.name });
       Object.assign(el.style, { left: pct(sh.box.x, W), top: pct(sh.box.y, H), width: pct(sh.box.w, W), height: pct(sh.box.h, H) });
+      if (sh.rot) el.style.transform = `rotate(${sh.rot}deg)`; // the box is stored unrotated; PowerPoint turns it about its centre
       if (sh.text) el.textContent = sh.text.replace(/\t/g, '  ');
       else if (sh.kind in KIND_LABEL) el.textContent = KIND_LABEL[sh.kind];
       if (sh.kind === 'image' && sh.image && !sh.image.external) pending.push([el, sh.image.target]);

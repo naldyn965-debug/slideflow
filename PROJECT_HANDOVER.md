@@ -13,7 +13,7 @@ No build. Browser ES modules, hash router, one global `ctx = { store, toast, use
 |---|---|---|
 | Storage contract | `js/store/index.js` | Views only talk to `ctx.store`. Add a backend by implementing the same shape. |
 | Adapters | `store/local.js`, `store/firebase.js` | Chosen at boot by `useFirebase` in `config.js`. Firebase SDK loads from gstatic only in Firebase mode. |
-| Parser | `pptx/parser.js` | Read-only. Returns `{slides[], width, height, warnings, zip}`. `summarize()` yields the JSON stored with the template. |
+| Parser | `pptx/parser.js` | Read-only. Returns `{slides[], width, height, warnings, zip}`. A shape's own rotation is exposed as `rot` (degrees, absent when 0); the preview turns the unrotated box by it. A parent group's rotation is not read. `summarize()` yields the JSON stored with the template. |
 | Design analysis | `pptx/design.js` | `extractDesign(parsed)` returns the Design System JSON. Reuses parser helpers (exported) and re-reads slide XML; Phase 1 parsing is unchanged. |
 | Validation | `pptx/validate.js` | Extension, size, magic bytes (ZIP vs OLE), then full parse. Throws `PptxError` with a user-facing message and `code`. |
 | UI | `ui/*`, `views/*` | `h()` builds DOM with text nodes only (no `innerHTML` for data). Native `<dialog>`. |

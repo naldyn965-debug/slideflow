@@ -359,6 +359,26 @@ const filmTitles = await page.locator('.film-t').allTextContents();
 ok(filmTitles.length === 10 && [0, 1, 2, 3, 9].map((i) => filmTitles[i]).join('|') === 'COVER|Upper title|Lower title at fifty three|Lowest title at sixty eight|Thank you', `filmstrip: slide titles come from the analysis (${filmTitles.join(' | ')})`);
 ok(!filmTitles.includes('Acme & Co.') && filmTitles[4] === 'No title' && filmTitles[5] === 'No title', 'filmstrip: the repeated brand name is never a title; a slide without a clear title says \"No title\"');
 
+// ---------- Preview: rotated shapes ----------
+// p22-geometry: slide 1 has a vertical rule stored as a 90-degree rotated horizontal bar, slide 2 a side label rotated 270 degrees. Unrotated, both were drawn lying flat.
+await page.keyboard.press('Escape');
+await page.waitForSelector('dialog', { state: 'detached' });
+await page.goto(`${BASE}/index.html#/templates`);
+await page.waitForSelector('.dropzone');
+await upload('p22-geometry.pptx');
+await page.waitForSelector('#tpl-name');
+await page.fill('#tpl-name', 'Geometry deck');
+await page.click('.modal >> text=Save to library');
+await page.waitForSelector('.tpl:has-text("Geometry deck") .tpl-design');
+await page.click('.tpl:has-text("Geometry deck") >> text=Preview');
+await page.waitForSelector('.film-item');
+await page.click('.film-item >> nth=0');
+const rule = await page.locator('.slide .shp[style*="rotate"]').evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { t: e.style.transform, tall: r.height > r.width }; }));
+ok(rule.length === 1 && rule[0].t === 'rotate(90deg)' && rule[0].tall, `preview: the 90-degree rotated bar on slide 1 is drawn standing up (${JSON.stringify(rule)})`);
+await page.click('.film-item >> nth=1');
+const label = await page.locator('.slide .shp:has-text("SIDE LABEL")').evaluate((e) => { const r = e.getBoundingClientRect(); return { t: e.style.transform, tall: r.height > r.width }; });
+ok(label.t === 'rotate(270deg)' && label.tall, `preview: the 270-degree rotated side label on slide 2 is drawn turned (${JSON.stringify(label)})`);
+
 // ---------- Not found + mobile ----------
 await page.goto(`${BASE}/index.html#/projects/does-not-exist`);
 await page.waitForSelector('text=Project not found');

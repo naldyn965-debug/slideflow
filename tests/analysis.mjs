@@ -125,6 +125,11 @@ const fo = finding(PG, 'content-overflow');
 ok(fo?.severity === 'warn' && fo.slides.join() === '3,4,7,10,11' && fo.evidence.every((e) => e.ratio === undefined && e.kind && e.slide), 'p22 geometry: a "content-overflow" finding lists the overflowing slides with evidence (and never the decorative ones)');
 ok(!PG.slides.some((s) => s.bounds && Object.values(s.bounds).some((v) => v < 0)), 'p22 geometry: no negative margins');
 
+// Parser: a shape's own rotation is exposed as `rot` (degrees) so the preview can draw it where PowerPoint does; unrotated shapes carry no `rot` key.
+const PGp = (await analyse(path.join(FX, 'p22-geometry.pptx'))).parsed;
+const rotated = PGp.slides.flatMap((s, i) => s.shapes.filter((x) => 'rot' in x).map((x) => `${i + 1}:${x.kind}:${x.rot}`));
+ok(rotated.join() === '1:shape:90,2:text:270' && PGp.slides[1].shapes.find((x) => x.rot).text === 'SIDE LABEL', `parser rot: p22-geometry has a rule rotated 90 and a text label rotated 270, nothing else (${rotated})`);
+
 // The "every slide is bleed" case: each slide carries an accent bar and a footer band off the edges.
 const PB = await D('p22-bleed-everywhere.pptx');
 ok(PB.spacing.bleedSlides === 5 && PB.spacing.offSlideSlides === 0 && PB.slides.every((s) => s.bleed?.length && !s.offSlide && !s.overflow), 'p22 bleed-everywhere: all slides have decorative bleed and none has overflow');
@@ -212,6 +217,12 @@ if (existsSync(FOOD_FILE)) {
   ok(FD.slides.map((s) => (s.bleedDetail || []).map((b) => b.edges.join('+')).join(' ')).join('|') === flush.join('|'), `FOOD bleed: the exact pictures and edges behind the 12 slides (${FD.slides.map((s) => (s.bleedDetail || []).map((b) => b.edges.join('+')).join(' ')).join('|')})`);
   ok(FD.slides.filter((s) => s.bleed).map((s) => s.n).join() === '3,4,5,6,7,8,9,10,11,12,13,14' && FD.slides.flatMap((s) => s.bleedDetail || []).length === 21, 'FOOD bleed: slides 3-14 only (not the cover, S2 or the closing slide), 21 entries');
   ok(FD.slides.flatMap((s) => s.bleedDetail || []).every((b) => b.kind === 'picture' && b.mode === 'flush' && b.byPct === 0), 'FOOD bleed: every entry is a picture touching an edge; no shape, nothing past an edge');
+  // Parser rot on the real deck: the S1/S15 backgrounds are stored as portrait boxes rotated -90, and the S7 photo is a rotated child of a group. Unrotated, they were drawn as a narrow strip / overlapping the text.
+  const FP = (await analyse(FOOD_FILE)).parsed;
+  const frot = FP.slides.flatMap((s, i) => s.shapes.filter((x) => 'rot' in x).map((x) => `${i + 1}:${x.rot}`));
+  ok(frot.join() === '1:-90,3:90,3:-90,3:-90,7:90,10:90,14:90,15:-90' && FP.slides.flatMap((s) => s.shapes).filter((x) => 'rot' in x).every((x) => x.kind === 'image'), `FOOD parser rot: 8 rotated pictures, on slides 1, 3, 7, 10, 14, 15 (${frot})`);
+  ok(FP.slides.flatMap((s) => s.shapes).filter((x) => !('rot' in x)).length === 209, 'FOOD parser rot: the other 209 shapes carry no rot key');
+
   ok(FD.spacing.offSlideSlides === 0 && FD.slides.every((s) => s.offSlide === undefined && s.overflow === undefined) && !finding(FD, 'content-overflow'), 'FOOD overflow: none (the 12 bleed slides are not overflow, and no overflow finding is raised)');
 
   // Genuine overflow is still reported on the real deck. Three shapes are moved in memory: S2 body text 15.5% past the right edge, S3 body text entirely outside the slide,

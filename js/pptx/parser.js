@@ -74,6 +74,12 @@ export function xfrmOf(el) {
   const holder = el.localName === 'graphicFrame' ? el : kid(el, 'spPr') || kid(el, 'grpSpPr');
   return readXfrm(kid(holder, 'xfrm'));
 }
+/** Rotation of a shape's own <a:xfrm> in degrees (clockwise, as PowerPoint stores it; 0 when none). A parent group's rotation is not read. */
+function rotOf(el) {
+  const holder = el.localName === 'graphicFrame' ? el : kid(el, 'spPr') || kid(el, 'grpSpPr');
+  const x = holder && kid(holder, 'xfrm');
+  return (x && Number(x.getAttribute('rot')) / 60000) || 0;
+}
 export function intoGroup(box, g) {
   const c = g.child;
   if (!c) return box;
@@ -137,6 +143,7 @@ function walkTree(tree, toSlide, ctx, out) {
     const rel = blip && ctx.rels.get(blip.getAttributeNS(NS_R, 'embed') || blip.getAttributeNS(NS_R, 'link'));
     if (rel) shape.image = { target: rel.target, external: rel.external };
 
+    if (own && rotOf(el)) shape.rot = rotOf(el);
     if (n === 'pic') shape.kind = 'image';
     else if (n === 'graphicFrame') {
       shape.kind = desc(el, 'tbl').length ? 'table' : desc(el, 'chart').length ? 'chart' : 'object';
