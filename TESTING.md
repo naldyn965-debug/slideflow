@@ -87,3 +87,12 @@ Manual, on your own machine:
 - [ ] Open decks from PowerPoint, Keynote and Google Slides in the Rendered tab and compare with the originals; read the "not drawn exactly" list
 - [ ] Arabic RTL deck authored in PowerPoint: alignment, bullets and mixed Arabic/English runs look right (fonts: see "Adding an Arabic font")
 - [ ] Resize the window and use the phone width: the slide scales, no horizontal scroll
+
+## Phase 3.2.1 (element selection)
+
+Automated: `node tests/selection.mjs` (179 checks; fixture `tests/fixtures/p321-selection.pptx` from `python3 tests/make_fixture_p321.py`). It covers hit-testing on known geometry (overlap, ellipse corners, rotation, flips, hairlines, groups, hidden, layout/master decoration), the pointer protocol, outline accuracy against the independent corners of `p31-geometry`, byte-identical drawn DOM and untouched XML on every fixture and real deck, and the real UI with mouse and touch. `render.mjs` and `e2e.mjs` are unchanged (render now also sweeps the new fixture: +3 checks).
+Manual, on your own machine:
+- [ ] Rendered tab on your own decks: click shapes, pictures, text, tables, lines; the outline sits on the element's frame; clicking empty space (including over template decoration) clears it
+- [ ] Overlapping elements: the one that is on top in PowerPoint is the one selected; no change when you drag across the slide to select text
+- [ ] Phone or tablet: tap selects, tap on empty space clears, scrolling the page with a finger started on the slide does not select
+- [ ] Switch slides (filmstrip, arrow keys, Slides tab): selection is cleared; leave the Rendered tab and come back on the same slide: it is kept
