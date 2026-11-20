@@ -9,9 +9,9 @@ import { kid, kids, desc, readXml, readRels, xfrmOf, intoGroup, placeholderOf, n
 export const DESIGN_VERSION = 4;
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const FOOTER = new Set(['dt', 'ftr', 'sldNum']);
-const DEFAULT_CLRMAP = { bg1: 'lt1', tx1: 'dk1', bg2: 'lt2', tx2: 'dk2' };
-const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
-const EMPTY_THEME = { name: null, part: null, colors: {}, fonts: {}, missing: true };
+export const DEFAULT_CLRMAP = { bg1: 'lt1', tx1: 'dk1', bg2: 'lt2', tx2: 'dk2' };
+export const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+export const EMPTY_THEME = { name: null, part: null, colors: {}, fonts: {}, missing: true };
 const ALIGN = { l: 'left', ctr: 'center', r: 'right', just: 'justify', dist: 'justify' };
 export const CLASSES = ['title', 'section', 'text', 'image', 'comparison', 'chart-table', 'closing', 'other'];
 
@@ -66,16 +66,16 @@ const isNeutral = (hex) => { const c = toRgb(hex); return Math.max(...c) - Math.
 /** `top` colour at `alpha` painted over `under` (both hex). */
 const over = (top, alpha, under) => (alpha == null || alpha >= 1 ? top : toHex(toRgb(top).map((v, k) => v * alpha + toRgb(under)[k] * (1 - alpha))));
 /** `<p:clrMapOvr><a:overrideClrMapping .../>` on a slide or layout. null = inherit (`masterClrMapping`). This is how PowerPoint stores dark background styles. */
-function clrMapOf(doc) {
+export function clrMapOf(doc) {
   const o = doc && desc(doc, 'overrideClrMapping')[0];
   if (!o) return null;
   const m = {}; for (const a of o.attributes) m[a.name] = a.value;
   return m;
 }
-const hidesMasterShapes = (doc) => /^(0|false)$/.test(doc?.documentElement.getAttribute('showMasterSp') || '');
+export const hidesMasterShapes = (doc) => /^(0|false)$/.test(doc?.documentElement.getAttribute('showMasterSp') || '');
 
 /** First colour child of `holder` (solidFill, gradient stop, bgRef...). Applies lumMod/lumOff only. */
-function colorOf(holder, cx) {
+export function colorOf(holder, cx) {
   const c = holder && [...holder.children].find((e) => ['srgbClr', 'schemeClr', 'sysClr', 'prstClr'].includes(e.localName));
   if (!c) return null;
   let hex = null; let slot = null;
@@ -97,7 +97,7 @@ function colorOf(holder, cx) {
 }
 
 // ---------- theme / master / layout ----------
-async function readTheme(zip, rels) {
+export async function readTheme(zip, rels) {
   const rel = [...rels.values()].find((r) => r.kind === 'theme');
   const doc = rel && (await readXml(zip, rel.target));
   if (!doc) return { ...EMPTY_THEME };
@@ -117,7 +117,7 @@ async function readTheme(zip, rels) {
   return t;
 }
 
-function fillOf(holder, cx, rels, env) {
+export function fillOf(holder, cx, rels, env) {
   for (const el of holder ? holder.children : []) {
     if (el.localName === 'solidFill') { const c = colorOf(el, cx); return { type: 'solid', hex: c?.hex || null, slot: c?.slot || null, alpha: c?.alpha, approx: c?.approx }; }
     if (el.localName === 'gradFill') { const stops = desc(el, 'gs').map((g) => colorOf(g, cx)?.hex).filter(Boolean); return { type: 'gradient', stops: stops.slice(0, 4), hex: null }; }
@@ -126,7 +126,7 @@ function fillOf(holder, cx, rels, env) {
   }
   return null;
 }
-function readBg(doc, cx, rels, env) {
+export function readBg(doc, cx, rels, env) {
   const bg = kid(desc(doc, 'cSld')[0], 'bg');
   if (!bg) return null;
   const pr = kid(bg, 'bgPr');
@@ -139,7 +139,7 @@ function readBg(doc, cx, rels, env) {
 /** Colour a slide background reliably resolves to, or null when it can't be known (gradient, image, effect fills). */
 const bgHex = (bg) => (bg?.type === 'solid' ? bg.hex : bg?.type === 'themeRef' && bg.idx <= 1001 ? bg.hex : null);
 
-async function loadMaster(zip, path, env) {
+export async function loadMaster(zip, path, env) {
   if (env.masters.has(path)) return env.masters.get(path);
   const doc = await readXml(zip, path);
   const rels = await readRels(zip, path);
@@ -155,7 +155,7 @@ async function loadMaster(zip, path, env) {
   m.decor = decorOf(doc, { ...env, cx: m.cx, rels, layoutDoc: null, master: m });
   return m;
 }
-async function loadLayout(zip, path, env) {
+export async function loadLayout(zip, path, env) {
   if (env.layouts.has(path)) return env.layouts.get(path);
   const doc = await readXml(zip, path);
   const rels = await readRels(zip, path);
@@ -191,7 +191,7 @@ function rotatedBox(b, deg) {
   const w = b.w * c + b.h * s; const h = b.w * s + b.h * c;
   return { ...b, x: b.x + b.w / 2 - w / 2, y: b.y + b.h / 2 - h / 2, w, h };
 }
-function phShape(ph, doc) {
+export function phShape(ph, doc) {
   if (!doc || !ph) return null;
   for (const sp of desc(doc, 'sp')) {
     const p = placeholderOf(sp);
@@ -201,12 +201,12 @@ function phShape(ph, doc) {
 }
 
 // ---------- text style resolution ----------
-function fontName(face, theme) {
+export function fontName(face, theme) {
   const m = /^\+(mj|mn)-(lt|ea|cs)$/.exec(face || '');
   if (!m) return face || null;
   return theme.fonts[m[1] === 'mj' ? 'major' : 'minor']?.[{ lt: 'latin', ea: 'ea', cs: 'cs' }[m[2]]] || null;
 }
-function runStyle(rPr, lvl, chain, env, rtl, scale, fontCol, shapeLayers) {
+export function runStyle(rPr, lvl, chain, env, rtl, scale, fontCol, shapeLayers) {
   const layers = [rPr, ...chain.map((c) => kid(kids(c, `lvl${lvl}pPr`)[0], 'defRPr'))];
   const pick = (f) => { for (let i = 0; i < layers.length; i++) { const v = layers[i] && f(layers[i]); if (v != null) return [v, i]; } return [null, -1]; };
   const flag = (a) => (l) => (l.hasAttribute(a) ? /^(1|true)$/.test(l.getAttribute(a)) : null);
@@ -226,7 +226,7 @@ function runStyle(rPr, lvl, chain, env, rtl, scale, fontCol, shapeLayers) {
   const auto = col || colorOf({ children: [{ localName: 'schemeClr', getAttribute: () => 'tx1', children: [] }] }, env.cx);
   return { sz: szRaw ? r1((Number(szRaw) / 100) * scale) : 18, src: szI === 0 ? 'explicit' : szI > 0 ? 'inherited' : 'default', b: !!b, i: !!i, font, hex: auto?.hex || null, alpha: auto?.alpha, slot: col ? col.slot : 'tx1', approx: auto?.approx };
 }
-function alignOf(pPr, lvl, chain) {
+export function alignOf(pPr, lvl, chain) {
   const a = pPr?.getAttribute('algn') || chain.map((c) => kids(c, `lvl${lvl}pPr`)[0]?.getAttribute('algn')).find(Boolean) || 'l';
   return ALIGN[a] || 'left';
 }

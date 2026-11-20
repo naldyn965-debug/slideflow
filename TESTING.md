@@ -79,3 +79,11 @@ Phase 2 additions
 - [ ] Firestore rules (emulator): owner can update only `design`, `designVersion`, `mode`; changing `name` or `size` on update is denied
 - [ ] 150+ slide deck: analysis time acceptable
 - [ ] Deck with gradient or picture backgrounds: limitations list mentions contrast not evaluated
+
+## Phase 3.1 (Rendered tab)
+
+Automated: `node tests/render.mjs` (670 checks; details, env vars `REAL_PPTX` and `SHOTS`, and the support matrix in `docs/PHASE-3.1-RENDERING.md`).
+Manual, on your own machine:
+- [ ] Open decks from PowerPoint, Keynote and Google Slides in the Rendered tab and compare with the originals; read the "not drawn exactly" list
+- [ ] Arabic RTL deck authored in PowerPoint: alignment, bullets and mixed Arabic/English runs look right (fonts: see "Adding an Arabic font")
+- [ ] Resize the window and use the phone width: the slide scales, no horizontal scroll

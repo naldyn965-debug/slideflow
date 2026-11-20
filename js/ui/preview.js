@@ -7,6 +7,7 @@ import { DESIGN_VERSION, extractDesign } from '../pptx/design.js';
 import { CLASS_LABEL } from '../lib/format.js';
 import { designPanel, swatch } from './design-panel.js';
 import { modal } from './modal.js';
+import { renderedPanel } from './rendered.js';
 import { errorState, friendly, spinner } from './states.js';
 
 const KIND_LABEL = { chart: 'Chart', object: 'Embedded object', table: 'Table' };
@@ -16,7 +17,8 @@ export async function openPreview(ctx, t, { onChange } = {}) {
   m.body.append(h('p', { class: 'status' }, spinner(), 'Opening template…'));
   const urls = new Map();
   let changed = false;
-  m.onClose = () => { urls.forEach((u) => u && URL.revokeObjectURL(u)); if (changed) onChange?.(); };
+  let rendered = null; // read-only "Rendered" tab (Phase 3.1), created the first time it is opened
+  m.onClose = () => { urls.forEach((u) => u && URL.revokeObjectURL(u)); rendered?.dispose(); if (changed) onChange?.(); };
 
   let parsed;
   try { parsed = await parsePptx(await ctx.store.templates.file(t)); }
@@ -66,6 +68,7 @@ export async function openPreview(ctx, t, { onChange } = {}) {
       slide.append(el);
     }
     details.replaceChildren(...slideDetails(s, i).filter(Boolean));
+    rendered?.goto(i);
     for (const [el, target] of pending) {
       if (!urls.has(target)) urls.set(target, await mediaUrl(parsed.zip, target).catch(() => null));
       if (current !== i) return;
@@ -132,15 +135,21 @@ export async function openPreview(ctx, t, { onChange } = {}) {
   };
   renderDesign();
   designTab.hidden = true;
-  const tabs = [['Slides', slidesTab], ['Design', designTab]].map(([label, panel], k) => h('button', { type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(k === 0), onclick: (e) => {
+  const renderedTab = h('div', { class: 'rendered-host' });
+  renderedTab.hidden = true;
+  const tabs = [['Slides', slidesTab], ['Design', designTab], ['Rendered', renderedTab]].map(([label, panel], k) => h('button', { type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(k === 0), onclick: (e) => {
     tabs.forEach((b, j) => b.setAttribute('aria-selected', String(b === e.currentTarget)));
-    [slidesTab, designTab].forEach((p) => { p.hidden = p !== panel; });
+    [slidesTab, designTab, renderedTab].forEach((p) => { p.hidden = p !== panel; });
+    if (panel === renderedTab) {
+      if (!rendered) { rendered = renderedPanel(parsed, { onPick: (i) => select(i), current: () => Math.max(current, 0) }); renderedTab.replaceChildren(rendered.el); }
+      rendered.show();
+    } else rendered?.hide();
   } }, label));
 
   m.body.replaceChildren(...[
     h('p', { class: 'muted summary' }, `${plural(parsed.slideCount, 'slide')}, ${sizeLabel(W, H)}, ${plural(parsed.imageRefs, 'picture reference')}`),
     h('div', { class: 'tabs', role: 'tablist' }, tabs),
-    slidesTab, designTab,
+    slidesTab, designTab, renderedTab,
     parsed.warnings.length > 0 && h('details', { class: 'notice' }, h('summary', {}, plural(parsed.warnings.length, 'note')), h('ul', {}, parsed.warnings.map((w) => h('li', {}, w))))].filter(Boolean));
   select(0);
 }

@@ -1,0 +1,23 @@
+/* Self-hosted, metric-compatible substitutes for the fonts decks ask for (Phase 3.1). Original, unmodified files from /fonts; licences in /fonts/licenses.
+   The family names carry an "SF " prefix on purpose: the deck's own font name (Calibri, Arial...) is always tried first, and these are only used when it is not installed.
+   Files load lazily, only when a slide actually uses the face. Same-origin only (CSP: font-src 'self'). */
+@font-face { font-family: "SF Carlito"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/Carlito-Regular.ttf") format("truetype"); }
+@font-face { font-family: "SF Carlito"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/Carlito-Bold.ttf") format("truetype"); }
+@font-face { font-family: "SF Carlito"; font-style: italic; font-weight: 400; font-display: swap; src: url("../fonts/Carlito-Italic.ttf") format("truetype"); }
+@font-face { font-family: "SF Carlito"; font-style: italic; font-weight: 700; font-display: swap; src: url("../fonts/Carlito-BoldItalic.ttf") format("truetype"); }
+@font-face { font-family: "SF Caladea"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/Caladea-Regular.ttf") format("truetype"); }
+@font-face { font-family: "SF Caladea"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/Caladea-Bold.ttf") format("truetype"); }
+@font-face { font-family: "SF Caladea"; font-style: italic; font-weight: 400; font-display: swap; src: url("../fonts/Caladea-Italic.ttf") format("truetype"); }
+@font-face { font-family: "SF Caladea"; font-style: italic; font-weight: 700; font-display: swap; src: url("../fonts/Caladea-BoldItalic.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/LiberationSans-Regular.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Sans"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/LiberationSans-Bold.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Sans"; font-style: italic; font-weight: 400; font-display: swap; src: url("../fonts/LiberationSans-Italic.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Sans"; font-style: italic; font-weight: 700; font-display: swap; src: url("../fonts/LiberationSans-BoldItalic.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Serif"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/LiberationSerif-Regular.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Serif"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/LiberationSerif-Bold.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Serif"; font-style: italic; font-weight: 400; font-display: swap; src: url("../fonts/LiberationSerif-Italic.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Serif"; font-style: italic; font-weight: 700; font-display: swap; src: url("../fonts/LiberationSerif-BoldItalic.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/LiberationMono-Regular.ttf") format("truetype"); }
+@font-face { font-family: "SF Liberation Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/LiberationMono-Bold.ttf") format("truetype"); }
+@font-face { font-family: "SF DejaVu Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/DejaVuSans.ttf") format("truetype"); }
+@font-face { font-family: "SF DejaVu Sans"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/DejaVuSans-Bold.ttf") format("truetype"); }
