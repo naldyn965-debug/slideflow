@@ -15,10 +15,14 @@
 // so the element that is visually on top at that point is the one selected. Hairline outlines (a 1 pt line is under 1 px wide) additionally get a small reach
 // around the pointer (SLOP), measured against the real path, so lines and connectors can be hit with a mouse and a finger.
 //
+// While an element is selected its outline carries 8 resize handles and one rotation handle above the top-centre one (Phase 3.2.2-A / B). They are VISUAL ONLY: pointer-events none, no cursor, no listeners, so selection and
+// touch behave exactly as before and nothing can be dragged, resized or rotated.
+//
 // A selection is a click or a tap: press and release of the same primary pointer within TAP px, no cancel (a touch that turns into a scroll or pinch is
 // cancelled by the browser, a mouse drag that selects text moves too far). Nothing is prevented or captured, so text can still be selected and copied.
 const E = 12700;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']; // Phase 3.2.2-A: purely visual resize handles (positioned by css/render.css); they take no pointer events and do nothing yet
 const TAP = { mouse: 4, pen: 6, touch: 10 }; // max pointer travel (CSS px) between press and release
 const SLOP = { mouse: 3, pen: 6, touch: 10 }; // reach around the pointer (CSS px) for hairline outlines
 
@@ -111,6 +115,11 @@ export function attachSelection(handle, scene, { onChange } = {}) {
     o.style.width = W; o.style.height = H;
     o.style.left = `calc(${n.left} - (${W} - ${n.width}) / 2)`; o.style.top = `calc(${n.top} - (${H} - ${n.height}) / 2)`;
     if (n.transform) o.style.transform = n.transform;
+    // 8 handles (corners + edge centres) as children of the outline: they sit at percentages of the same frame, so rotation, scale and zoom follow it for free
+    const hs = document.createElement('div'); hs.className = 'sf-sel-h'; hs.setAttribute('aria-hidden', 'true');
+    const rot = document.createElement('span'); rot.className = 'sf-rot'; hs.append(rot); // Phase 3.2.2-B: visual rotation handle above the top-centre handle (a stem and a knob; drawn first so the resize handle covers the stem's end)
+    for (const k of HANDLES) { const hd = document.createElement('span'); hd.className = 'sf-hdl'; hd.dataset.h = k; hs.append(hd); }
+    o.append(hs);
     root.append(o);
     return o;
   }

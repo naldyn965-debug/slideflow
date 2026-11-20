@@ -96,3 +96,19 @@ Manual, on your own machine:
 - [ ] Overlapping elements: the one that is on top in PowerPoint is the one selected; no change when you drag across the slide to select text
 - [ ] Phone or tablet: tap selects, tap on empty space clears, scrolling the page with a finger started on the slide does not select
 - [ ] Switch slides (filmstrip, arrow keys, Slides tab): selection is cleared; leave the Rendered tab and come back on the same slide: it is kept
+
+## Phase 3.2.2-A (resize handles, visual only)
+
+Automated: `node tests/selection.mjs` now has 200 checks (21 new): 8 handles per selection and none after clear / slide change, centres within 1 px of independently computed corners and edge midpoints (rotated, flipped, group-nested, hand-computed 45 degrees), 50 % / 100 % / 150 % slide scale, size and style, small-frame rule, input transparency, real mouse and touch UI.
+Manual:
+- [ ] Select shapes, pictures, text boxes, rotated elements on your own decks: handles sit on the corners and edge midpoints and turn with the element
+- [ ] Resize the window and use the phone width: handles stay on the element and keep their size
+- [ ] Click or tap on a handle: nothing happens except the normal selection of whatever is under it
+
+## Phase 3.2.2-B (rotation handle, visual only)
+
+Automated: `node tests/selection.mjs` now has 218 checks (18 new): one knob per selection and none after clear / slide change, 24 px beyond the top-centre handle within 1 px for rotated, flipped and nested elements, hand-computed 45 degrees, 50 % / 100 % / 150 % scale, window resize in the real UI, style identical to the resize handles, stem, input transparency (mouse and touch), small frames.
+Manual:
+- [ ] Select a rotated element on your own decks: the knob sits above its top-centre handle and turns with it
+- [ ] Zoom / resize the window / phone width: the knob stays centred over the top edge, 24 px away
+- [ ] Click or tap on the knob: nothing happens except the normal selection of whatever is under it

@@ -260,6 +260,176 @@ section('outline accuracy: the outline sits exactly on the element\'s frame (rot
 }
 
 // ======================================================================================================
+section('resize handles (Phase 3.2.2-A): 8 visual handles on the outline, positioned exactly, no behaviour');
+{
+  const exp = JSON.parse(readFileSync(path.join(FX, 'p31-geometry.expected.json'), 'utf8')).elements;
+  await draw(path.join(FX, 'p31-geometry.pptx'), 0);
+  const res = await page.evaluate((exp) => {
+    const { sel, sc, hnd } = globalThis.__s; const out = []; const u = 960 / (sc.width / 12700);
+    const none = hnd.root.querySelectorAll('.sf-hdl').length;
+    for (const [name, e] of Object.entries(exp)) {
+      if (e.kind === 'group') continue;
+      const el = sc.elements.find((x) => x.name === name); sel.select(el.id);
+      const hs = [...hnd.root.querySelectorAll('.sf-sel .sf-hdl')]; const R = hnd.root.getBoundingClientRect();
+      const centres = hs.map((h) => { const r = h.getBoundingClientRect(); return [r.left + r.width / 2 - R.left, r.top + r.height / 2 - R.top]; });
+      const c = []; for (let i = 0; i < 8; i += 2) c.push([(e.corners[i] / 12700) * u, (e.corners[i + 1] / 12700) * u]);
+      const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      const want = [c[0], c[1], c[2], c[3], mid(c[0], c[1]), mid(c[1], c[2]), mid(c[2], c[3]), mid(c[3], c[0])]; // as a SET: a flip swaps which corner is which
+      const used = new Set(); let worst = 0;
+      for (const w of want) { let bi = -1; let bd = 1e9; centres.forEach((p, i) => { const d = Math.hypot(p[0] - w[0], p[1] - w[1]); if (!used.has(i) && d < bd) { bd = d; bi = i; } }); used.add(bi); worst = Math.max(worst, bd); }
+      const wpx = Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]); const hpx = Math.hypot(c[2][0] - c[1][0], c[2][1] - c[1][1]);
+      out.push({ name, n: hs.length, kinds: hs.map((h) => h.dataset.h).sort().join(), worst, big: wpx >= 40 && hpx >= 40, shear: !!el.world.shear, rot: el.world.rot });
+    }
+    sel.clear();
+    return { out, none, after: hnd.root.querySelectorAll('.sf-hdl').length };
+  }, exp);
+  const KINDS = ['e', 'n', 'ne', 'nw', 's', 'se', 'sw', 'w'].join();
+  ok(res.none === 0 && res.after === 0, 'no handles exist before a selection and none are left after clear()');
+  ok(res.out.every((r) => r.n === 8 && r.kinds === KINDS), `every selected element gets exactly 8 handles: nw n ne e se s sw w (${res.out.length} elements)`, res.out.filter((r) => r.n !== 8));
+  const meas = res.out.filter((r) => r.big && !r.shear);
+  const worst = Math.max(...meas.map((r) => r.worst));
+  ok(meas.length >= 8 && worst <= 1, `handle centres sit on the independently computed corners and edge midpoints within 1 px for ${meas.length} elements incl. rotated, flipped and group-nested (worst ${worst.toFixed(2)} px)`, meas.filter((r) => r.worst > 1));
+  ok(meas.some((r) => r.rot) && meas.some((r) => /flip/.test(r.name)) && meas.some((r) => /g0[678]/.test(r.name)), 'the checked set includes rotated, flipped and nested elements');
+}
+{
+  await draw(SEL, 0);
+  // ground truth by hand: rot-rect centre (860,100), 160x60, rotated 45 degrees; front-rect (200,140) 300x200, unrotated
+  const g = await page.evaluate(() => {
+    const { sel, sc, hnd } = globalThis.__s; const R = hnd.root.getBoundingClientRect(); const at = (n) => { sel.select(sc.elements.find((e) => e.name === n).id); return Object.fromEntries([...hnd.root.querySelectorAll('.sf-hdl')].map((h) => { const r = h.getBoundingClientRect(); return [h.dataset.h, { x: r.left + r.width / 2 - R.left, y: r.top + r.height / 2 - R.top, w: r.width, h: r.height }]; })); };
+    const cs = (n) => getComputedStyle(hnd.root.querySelector('.sf-hdl'));
+    const rot = at('rot-rect'); const front = at('front-rect'); const st = getComputedStyle(hnd.root.querySelector('.sf-hdl'));
+    return { rot, front, style: { pe: st.pointerEvents, cursor: st.cursor, bg: st.backgroundColor, bw: st.borderTopWidth, w: st.width, shadow: st.boxShadow !== 'none' } };
+  });
+  const near = (a, x, y, tol = 0.75) => Math.hypot(a.x - x, a.y - y) <= tol;
+  const k = Math.SQRT1_2; const c = [860, 100]; const along = (a, b) => [c[0] + (a * k - b * k), c[1] + (a * k + b * k)]; // (a,b) in the rect's own frame, rotated 45deg clockwise
+  const want = { nw: along(-80, -30), ne: along(80, -30), se: along(80, 30), sw: along(-80, 30), n: along(0, -30), e: along(80, 0), s: along(0, 30), w: along(-80, 0) };
+  ok(Object.entries(want).every(([h, [x, y]]) => near(g.rot[h], x, y)), 'rotated 45 degrees: all 8 handles are where the rotated rectangle\'s corners and edge midpoints are (hand-computed)', { got: g.rot, want });
+  ok(g.rot.nw.w > 10 && g.rot.nw.w < 12.5, 'the handles themselves rotate with the element (an 8 px square at 45 degrees spans about 11.3 px)', g.rot.nw);
+  const fw = { nw: [200, 140], n: [350, 140], ne: [500, 140], e: [500, 240], se: [500, 340], s: [350, 340], sw: [200, 340], w: [200, 240] };
+  ok(Object.entries(fw).every(([h, [x, y]]) => near(g.front[h], x, y)) && g.front.nw.w === 8 && g.front.nw.h === 8, 'unrotated: corners and midpoints are on the frame, handles are 8 x 8 px', g.front);
+  ok(g.style.pe === 'none' && g.style.cursor === 'auto' && g.style.w === '8px' && /255, 255, 255/.test(g.style.bg) && /^1(\.5)?px$/.test(g.style.bw) && g.style.shadow, 'handles are white 8 px squares with a 1.5 px accent border (the browser draws 1 px on 1x screens) and a soft shadow, no pointer events and no resize cursor (nothing is draggable yet)', g.style);
+}
+{
+  // zoom: the same slide at other widths. Handle size stays 8 px; positions scale with the slide.
+  await draw(SEL, 0);
+  const z = await page.evaluate(async () => {
+    const { sel, sc, hnd } = globalThis.__s; sel.select(sc.elements.find((e) => e.name === 'front-rect').id); const out = {};
+    for (const w of [480, 1440, 960]) {
+      hnd.setWidth(w); await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const R = hnd.root.getBoundingClientRect(); const u = w / 960; const get = (h) => { const r = hnd.root.querySelector(`.sf-hdl[data-h="${h}"]`).getBoundingClientRect(); return { x: r.left + r.width / 2 - R.left, y: r.top + r.height / 2 - R.top, w: r.width }; };
+      const nw = get('nw'); const se = get('se'); out[w] = { dnw: Math.hypot(nw.x - 200 * u, nw.y - 140 * u), dse: Math.hypot(se.x - 500 * u, se.y - 340 * u), size: nw.w };
+    }
+    return out;
+  });
+  ok(Object.values(z).every((r) => r.dnw <= 0.75 && r.dse <= 0.75 && r.size === 8), 'at 50 %, 150 % and 100 % slide scale the handles stay on the frame corners and stay 8 px', z);
+}
+{
+  // small frames: edge-centre handles are left out when they would pile onto the corner handles; all 8 exist in the DOM, 8 are visible on normal elements
+  await draw(SEL, 0);
+  const v = await page.evaluate(() => {
+    const { sel, sc, hnd } = globalThis.__s; const vis = (n) => { sel.select(sc.elements.find((e) => e.name === n).id); const hs = [...hnd.root.querySelectorAll('.sf-hdl')]; return { dom: hs.length, shown: hs.filter((h) => getComputedStyle(h).display !== 'none').map((h) => h.dataset.h).sort().join() }; };
+    return { front: vis('front-rect'), line: vis('h-line'), small: vis('g-child-a'), diag: vis('diag-line') };
+  });
+  ok(v.front.dom === 8 && v.front.shown === ['e', 'n', 'ne', 'nw', 's', 'se', 'sw', 'w'].join(), 'a normal element shows all 8 handles', v.front);
+  ok(v.line.dom === 8 && v.line.shown === ['ne', 'nw', 'se', 'sw'].join(), 'a hairline (300 x 0 pt) shows its 4 corner handles only', v.line);
+  ok(v.small.dom === 8 && v.small.shown.split(',').length === 8 && v.diag.shown.split(',').length === 8, 'a 60 pt square and a 200 x 120 diagonal frame still show all 8', v);
+}
+{
+  // visual only: handles do not catch pointer events; picking is identical with and without handles on screen
+  await draw(SEL, 0);
+  const r = await page.evaluate(() => {
+    const { sel, sc, hnd } = globalThis.__s; const R = hnd.root.getBoundingClientRect(); const front = sc.elements.find((e) => e.name === 'front-rect');
+    const pts = []; for (let x = 150; x <= 560; x += 10) for (let y = 100; y <= 380; y += 10) pts.push([x, y]);
+    const names = () => pts.map(([x, y]) => { const id = sel.pick(R.left + x, R.top + y); return id; });
+    const before = names(); sel.select(front.id); const during = names();
+    const hdl = [...hnd.root.querySelectorAll('.sf-hdl')].map((h) => { const b = h.getBoundingClientRect(); const top = document.elementsFromPoint(b.left + b.width / 2, b.top + b.height / 2); return top.some((n) => n.classList.contains('sf-hdl') || n.classList.contains('sf-sel') || n.classList.contains('sf-sel-h')); });
+    return { same: JSON.stringify(before) === JSON.stringify(during), hit: hdl.some(Boolean), listeners: hnd.root.querySelectorAll('.sf-sel-h, .sf-hdl').length };
+  });
+  ok(r.same, 'picking over and around the selected element gives the same result with and without handles');
+  ok(!r.hit, 'the browser never reports a handle (or the outline) under the pointer: they are transparent to input');
+}
+
+// ======================================================================================================
+section('rotation handle (Phase 3.2.2-B): one visual knob 24 px above the top-centre handle, in the element\'s own frame');
+{
+  const exp = JSON.parse(readFileSync(path.join(FX, 'p31-geometry.expected.json'), 'utf8')).elements;
+  await draw(path.join(FX, 'p31-geometry.pptx'), 0);
+  const res = await page.evaluate((exp) => {
+    const { sel, sc, hnd } = globalThis.__s; const out = []; const u = 960 / (sc.width / 12700); const R = hnd.root.getBoundingClientRect();
+    const none = hnd.root.querySelectorAll('.sf-rot').length;
+    const ctr = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2 - R.left, r.top + r.height / 2 - R.top]; };
+    for (const [name, e] of Object.entries(exp)) {
+      if (e.kind === 'group') continue;
+      const el = sc.elements.find((x) => x.name === name); sel.select(el.id);
+      const knobs = hnd.root.querySelectorAll('.sf-sel .sf-rot'); const nh = ctr(hnd.root.querySelector('.sf-hdl[data-h="n"]')); const k = knobs[0] && ctr(knobs[0]);
+      let cx = 0; let cy = 0; for (let i = 0; i < 8; i += 2) { cx += (e.corners[i] / 12700) * u / 4; cy += (e.corners[i + 1] / 12700) * u / 4; } // frame centre from the independent corners
+      const dn = Math.hypot(nh[0] - cx, nh[1] - cy); const up = [(nh[0] - cx) / dn, (nh[1] - cy) / dn]; // outward direction through the top-centre handle
+      const want = [nh[0] + up[0] * 24, nh[1] + up[1] * 24];
+      const wpx = Math.hypot(e.corners[2] - e.corners[0], e.corners[3] - e.corners[1]) / 12700 * u; const hpx = Math.hypot(e.corners[4] - e.corners[2], e.corners[5] - e.corners[3]) / 12700 * u;
+      out.push({ name, count: knobs.length, inside: !!knobs[0]?.parentElement?.classList.contains('sf-sel-h'), err: k ? Math.hypot(k[0] - want[0], k[1] - want[1]) : 99, gap: k ? Math.hypot(k[0] - nh[0], k[1] - nh[1]) : 0, big: wpx >= 40 && hpx >= 40, shear: !!el.world.shear, rot: el.world.rot });
+    }
+    sel.clear();
+    return { out, none, after: hnd.root.querySelectorAll('.sf-rot').length };
+  }, exp);
+  ok(res.none === 0 && res.after === 0, 'no rotation handle exists before a selection and none is left after clear()');
+  ok(res.out.every((r) => r.count === 1 && r.inside), `every selected element gets exactly one rotation handle, inside the handle layer (${res.out.length} elements)`, res.out.filter((r) => r.count !== 1));
+  const meas = res.out.filter((r) => r.big && !r.shear);
+  const worst = Math.max(...meas.map((r) => r.err)); const gaps = meas.map((r) => r.gap);
+  ok(meas.length >= 8 && worst <= 1 && gaps.every((g) => Math.abs(g - 24) <= 0.75), `the knob is 24 px beyond the top-centre handle on the line from the frame centre through it, within 1 px, for ${meas.length} elements incl. rotated, flipped and nested (worst ${worst.toFixed(2)} px)`, meas.filter((r) => r.err > 1 || Math.abs(r.gap - 24) > 0.75));
+  ok(meas.some((r) => r.rot) && meas.some((r) => /flip/.test(r.name)) && meas.some((r) => /g0[678]/.test(r.name)), 'the checked set includes rotated, flipped and nested elements');
+}
+{
+  await draw(SEL, 0);
+  const g = await page.evaluate(() => {
+    const { sel, sc, hnd } = globalThis.__s; const R = hnd.root.getBoundingClientRect();
+    const knob = (n) => { sel.select(sc.elements.find((e) => e.name === n).id); const el = hnd.root.querySelector('.sf-rot'); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2 - R.left, y: r.top + r.height / 2 - R.top, w: r.width }; };
+    const front = knob('front-rect'); const rot = knob('rot-rect'); const line = knob('h-line');
+    const k = hnd.root.querySelector('.sf-rot'); const h = hnd.root.querySelector('.sf-hdl'); const ks = getComputedStyle(k); const hs = getComputedStyle(h); const st = getComputedStyle(k, '::before');
+    const same = ['width', 'height', 'backgroundColor', 'borderTopWidth', 'borderTopStyle', 'borderTopColor', 'boxShadow', 'pointerEvents', 'cursor'].every((p) => ks[p] === hs[p]);
+    return { front, rot, line, same, round: ks.borderTopLeftRadius, stem: { w: st.width, h: st.height, bg: st.backgroundColor, accent: getComputedStyle(document.documentElement).getPropertyValue('--accent') }, pe: ks.pointerEvents, cursor: ks.cursor, stemPe: st.pointerEvents };
+  });
+  const k = Math.SQRT1_2; const c = [860, 100]; const along = (a, b) => [c[0] + (a * k - b * k), c[1] + (a * k + b * k)];
+  const wantRot = along(0, -30 - 24); // 30 = half the 60 pt height, 24 px knob distance, in the rect's own frame, then rotated 45 degrees
+  ok(Math.hypot(g.front.x - 350, g.front.y - (140 - 24)) <= 0.75, 'unrotated: the knob is centred above the top edge, 24 px up', g.front);
+  ok(Math.hypot(g.rot.x - wantRot[0], g.rot.y - wantRot[1]) <= 0.75, 'rotated 45 degrees: the knob moves with the element, still 24 px out along its own "up" (hand-computed)', { got: g.rot, want: wantRot });
+  ok(Math.abs(g.line.x - 210) <= 0.75 && Math.abs(g.line.y - (400 - 3 - 24)) <= 1, 'a zero-height line gets its knob above the (6 px minimum) outline', g.line);
+  ok(g.same && g.round !== '0px', 'the knob matches the resize handles (size, fill, border, shadow, no input, no cursor); it is round to tell it apart', { same: g.same, round: g.round });
+  ok(g.stem.w === '1px' && Math.abs(parseFloat(g.stem.h) - 20) <= 0.5 && g.stemPe === 'none', 'a 1 px accent stem joins the knob to the frame\'s top edge (20 px), also transparent to input', g.stem);
+}
+{
+  // zoom: constant 24 px distance, position scales with the slide
+  await draw(SEL, 0);
+  const z = await page.evaluate(async () => {
+    const { sel, sc, hnd } = globalThis.__s; sel.select(sc.elements.find((e) => e.name === 'front-rect').id); const out = {};
+    for (const w of [480, 1440, 960]) {
+      hnd.setWidth(w); await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const R = hnd.root.getBoundingClientRect(); const u = w / 960; const r = hnd.root.querySelector('.sf-rot').getBoundingClientRect();
+      out[w] = { dx: r.left + r.width / 2 - R.left - 350 * u, dy: r.top + r.height / 2 - R.top - (140 * u - 24), size: r.width };
+    }
+    return out;
+  });
+  ok(Object.values(z).every((r) => Math.abs(r.dx) <= 0.75 && Math.abs(r.dy) <= 0.75 && r.size === 8), 'at 50 %, 150 % and 100 % slide scale the knob stays centred over the top edge and exactly 24 px away (it does not scale)', z);
+}
+{
+  // not blocking input; present on small frames
+  await draw(SEL, 0);
+  const r = await page.evaluate(() => {
+    const { sel, sc, hnd } = globalThis.__s; const R = hnd.root.getBoundingClientRect(); const front = sc.elements.find((e) => e.name === 'front-rect');
+    const pts = []; for (let x = 150; x <= 560; x += 5) for (let y = 80; y <= 380; y += 5) pts.push([x, y]);
+    const names = () => pts.map(([x, y]) => sel.pick(R.left + x, R.top + y));
+    const before = names(); sel.select(front.id); const during = names();
+    const b = hnd.root.querySelector('.sf-rot').getBoundingClientRect(); const top = document.elementsFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+    const stem = document.elementsFromPoint(b.left + b.width / 2, b.bottom + 6);
+    const small = (n) => { sel.select(sc.elements.find((e) => e.name === n).id); const k = hnd.root.querySelector('.sf-rot'); return getComputedStyle(k).display !== 'none' && k.getBoundingClientRect().width > 0; };
+    return { same: JSON.stringify(before) === JSON.stringify(during), hit: [...top, ...stem].some((n) => n.classList.contains('sf-rot') || n.classList.contains('sf-sel-h')), under: sc.byId.get(sel.pick(R.left + 350, R.top + 116))?.name, small: small('h-line') && small('g-child-a') };
+  });
+  ok(r.same, 'picking around the selected element is identical with and without the rotation handle on screen');
+  ok(!r.hit, 'the browser never reports the knob or its stem under the pointer');
+  ok(r.under === 'back-rect', 'the point under the knob belongs to the element behind it (back-rect), not to the knob', r);
+  ok(r.small, 'the knob is shown for a hairline and a small element too');
+}
+
+// ======================================================================================================
 section('nothing else changes: DOM identical until something is selected, identical again after clear, XML untouched (all fixtures and real decks)');
 {
   const decks = [...['p31-geometry', 'p31-shapes', 'p31-text', 'p31-arabic', 'p31-media', 'p31-unsupported', 'p31-template-decor', 'p321-selection', 'p22-geometry'].map((n) => path.join(FX, n + '.pptx')), ...realFiles];
@@ -350,6 +520,19 @@ const state = (pg) => pg.evaluate(() => {
   ok(s.count === 1 && s.name === 'front-rect' && s.id === 'ppt/slides/slide1.xml#3', 'a click selects the element under the pointer by its Scene Model id', s);
   ok(/Selected: Shape “front-rect” \(ppt\/slides\/slide1\.xml#3\)/.test(s.status), 'the status line names the selected element and its id', s.status);
   ok(s.dx !== null && s.dx <= 1, 'the outline matches the element\'s rectangle at the scale on screen (1 px)', s);
+  const hd = () => ui.evaluate(() => { const root = document.querySelector('.rendered-host .sf-slide'); const R = root.getBoundingClientRect(); const o = root.querySelector('.sf-sel'); const f = o && [...root.querySelectorAll('.sf-el')].find((n) => n.dataset.id === o.dataset.for)?.getBoundingClientRect(); const get = (h) => { const r = root.querySelector(`.sf-hdl[data-h="${h}"]`)?.getBoundingClientRect(); return r && { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }; return { n: root.querySelectorAll('.sf-hdl').length, nw: get('nw'), se: get('se'), f: f && { l: f.left, t: f.top, r: f.right, b: f.bottom } }; });
+  let hh = await hd();
+  ok(hh.n === 8 && Math.hypot(hh.nw.x - hh.f.l, hh.nw.y - hh.f.t) <= 1 && Math.hypot(hh.se.x - hh.f.r, hh.se.y - hh.f.b) <= 1, 'selecting in the real UI shows 8 handles, the corner ones on the element\'s corners at the scale on screen', hh);
+  await ui.mouse.click(...(await at(ui, 196, 240)));
+  s = await state(ui);
+  ok(s.name === 'back-rect', 'a click on the outer half of a handle goes through to the element under it (handles never intercept clicks)', s);
+  await ui.mouse.click(...(await at(ui, 450, 300)));
+  const rotAt = () => ui.evaluate(() => { const root = document.querySelector('.rendered-host .sf-slide'); const k = root.querySelector('.sf-rot'); const n = root.querySelector('.sf-hdl[data-h="n"]'); const c = (e) => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }; return { count: root.querySelectorAll('.sf-rot').length, k: k && c(k), n: n && c(n) }; });
+  let rk = await rotAt(); const bx = await slideBox(ui);
+  ok(rk.count === 1 && Math.abs(rk.k.x - rk.n.x) <= 0.75 && Math.abs(rk.n.y - rk.k.y - 24) <= 0.75, 'in the real UI the rotation handle is 24 px above the top-centre handle', rk);
+  await ui.mouse.click(...(await at(ui, 350, 116)));
+  s = await state(ui); ok(s.name === 'back-rect', 'a click on the rotation handle goes through to the element behind it', s);
+  await ui.mouse.click(...(await at(ui, 450, 300)));
 
   await ui.mouse.click(...(await at(ui, 100, 100)));
   s = await state(ui);
@@ -365,6 +548,7 @@ const state = (pg) => pg.evaluate(() => {
   await ui.mouse.click(...(await at(ui, 30, 30)));
   s = await state(ui);
   ok(s.count === 0 && /Nothing selected/.test(s.status), 'clicking empty space clears the selection and its outline');
+  ok((await hd()).n === 0 && (await rotAt()).count === 0, 'and the handles and the rotation handle are gone with it');
   await ui.mouse.click(...(await at(ui, 450, 300))); await ui.mouse.click(...(await at(ui, 500, 525)));
   ok((await state(ui)).count === 0, 'clicking master decoration counts as empty space');
   await ui.mouse.click(...(await at(ui, 110, 500)));
@@ -394,6 +578,7 @@ const state = (pg) => pg.evaluate(() => {
   await ui.click('.rendered .film-item >> nth=1'); await ui.waitForSelector('.rendered-host .sf-slide[data-slide="1"]');
   s = await state(ui);
   ok(s.count === 0 && /Nothing selected/.test(s.status), 'switching slide clears the selection (filmstrip)', s);
+  ok((await hd()).n === 0 && (await rotAt()).count === 0, 'and no handles or rotation handle are left on the new slide');
   await ui.mouse.click(...(await at(ui, 150, 150)));
   s = await state(ui);
   ok(s.name === 's2-rect' && s.id === 'ppt/slides/slide2.xml#2', 'on slide 2 the same cNvPr id number is a different Scene Model id (qualified by the slide part)', s);
@@ -421,6 +606,12 @@ const state = (pg) => pg.evaluate(() => {
   await ui.waitForFunction(() => { const r = document.querySelector('.rendered-host .sf-slide'); const f = document.querySelector('.sf-frame'); return r && Math.abs(r.getBoundingClientRect().width - f.clientWidth) <= 1 && f.clientWidth < 800; });
   s = await state(ui);
   ok(s.name === 'rot-rect' && s.dx <= 1.5, 'after the window is resized the outline still matches the element', s);
+  hh = await hd();
+  const b2 = await slideBox(ui); const k2 = Math.SQRT1_2;
+  rk = await rotAt();
+  { const s2 = b2.s; const px = b2.x + 860 * s2; const py = b2.y + 100 * s2; const up = 30 * s2 + 24; const wx = px + up * k2; const wy = py - up * k2;
+    ok(rk.count === 1 && Math.hypot(rk.k.x - wx, rk.k.y - wy) <= 1.25, 'and the rotation handle of the rotated element is still 24 px out from its top edge at the new scale (hand-computed)', { rk, want: [wx, wy] }); }
+  ok(hh.n === 8 && hh.nw && Math.hypot(hh.nw.x - (b2.x + (860 + (-80 * k2 + 30 * k2)) * b2.s), hh.nw.y - (b2.y + (100 + (-80 * k2 - 30 * k2)) * b2.s)) <= 1.25, 'and the handles of a rotated element follow it at the new scale (nw handle vs hand-computed corner)', { hh, b2 });
   await ui.mouse.click(...(await at(ui, 450, 300)));
   ok((await state(ui)).name === 'front-rect', 'and hit-testing still lands on the right element at the new scale');
   await ui.setViewportSize({ width: 1280, height: 900 });
@@ -445,6 +636,14 @@ section('Rendered tab: touch (phone width, real touch input)');
   await tap(450, 300);
   let s = await state(ui);
   ok(s.name === 'front-rect' && s.count === 1 && s.dx <= 1, 'a tap selects the element and draws its outline', s);
+  const th = await ui.evaluate(() => { const root = document.querySelector('.rendered-host .sf-slide'); const h = root.querySelector('.sf-hdl'); return { n: root.querySelectorAll('.sf-hdl').length, size: h.getBoundingClientRect().width, pe: getComputedStyle(h).pointerEvents }; });
+  ok(th.n === 8 && th.pe === 'none' && th.size >= 8, 'a tap shows 8 handles at phone width, still transparent to input', th);
+  const tk = await ui.evaluate(() => { const k = document.querySelector('.rendered-host .sf-slide .sf-rot'); return { n: document.querySelectorAll('.rendered-host .sf-rot').length, pe: getComputedStyle(k).pointerEvents }; });
+  ok(tk.n === 1 && tk.pe === 'none', 'a tap also shows the rotation handle, transparent to input', tk);
+  await tap(200, 240);
+  s = await state(ui);
+  ok(s.name === 'front-rect' || s.name === 'back-rect', 'tapping on a handle location behaves like tapping the slide there (no handle interaction)', s);
+  await tap(450, 300);
   await tap(100, 100);
   ok((await state(ui)).name === 'back-rect', 'tapping another element updates the selection');
   await tap(250, 200);
