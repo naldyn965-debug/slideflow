@@ -13,11 +13,12 @@ jobs:
           set -e
           ZIP=$(ls *.zip | head -n 1)
           test -n "$ZIP"
-          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name "$ZIP" -exec rm -rf {} +
           unzip -q "$ZIP" -d /tmp/x
-          SRC=$(ls -d /tmp/x/*/ | head -n 1)
-          rm -rf "$SRC/.github"
-          cp -a "$SRC". .
+          if [ "$(ls -A /tmp/x | wc -l)" -eq 1 ]; then SRC=$(ls -d /tmp/x/*/); else SRC=/tmp/x/; fi
+          test -f "${SRC}index.html"
+          rm -rf "${SRC}.github"
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name "$ZIP" -exec rm -rf {} +
+          cp -a "${SRC}." .
           rm "$ZIP"
       - name: Commit
         run: |
