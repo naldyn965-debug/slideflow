@@ -112,3 +112,15 @@ Manual:
 - [ ] Select a rotated element on your own decks: the knob sits above its top-centre handle and turns with it
 - [ ] Zoom / resize the window / phone width: the knob stays centred over the top edge, 24 px away
 - [ ] Click or tap on the knob: nothing happens except the normal selection of whatever is under it
+
+## Phase 3.2.3-A (move preview: drag the selected element, temporary)
+
+Automated: `node tests/selection.mjs` now has 334 checks (116 new: 93 on the slide harness, 23 in the real UI): real-mouse drag with exact deltas, 50 / 100 / 150 % scale and a zoom change mid-drag, all 15 non-group elements of `p31-geometry` (plain, rotated, flipped, group-nested, lines, text) dragged with a real mouse, the 9 that are large enough checked against the independently computed corners shifted by the drag, the centre clamp, the cancellation and edge cases (pointercancel, Escape, second finger, right button, other pointer, lost button, blur, select / clear / dispose mid-drag, hidden slide), hairline hit-testing after a move, every fixture and real deck (DOM byte-identical after drag + dispose, XML and world frames unchanged), code guards, and the real Rendered tab with mouse and with real touch (CDP): outline and handles follow, status line, `touch-action`, second finger, slide switch and tab switch end the preview. `render.mjs` (673) and `e2e.mjs` (108) are unchanged and pass.
+Mutation checks (one-off, not committed): ignoring the offset in the hairline test, writing the offset in px instead of `--u`, not reverting on cancel, no clamp, no second-finger cancel and not moving the outline were each caught by the suite.
+Manual, on your own machine and phone:
+- [ ] Select an element on your own decks and drag it with the mouse: it follows the pointer, the outline and handles stay on it, rotated / flipped / grouped elements move in screen directions
+- [ ] Zoom the browser or resize the window and drag again: the element stays under the pointer
+- [ ] Phone or tablet: select by tap, then drag with a finger: it moves and the page does not scroll; a swipe starting on an unselected element still scrolls the page
+- [ ] Press Escape during a drag, or switch app / window: the element jumps back
+- [ ] Switch slide and return: the slide is as in the file; nothing was saved
+

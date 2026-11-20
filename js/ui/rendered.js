@@ -53,10 +53,13 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
     ].filter(Boolean);
   }
 
-  const IDLE = 'Nothing selected. Click or tap an element to select it (selection only: nothing is edited or saved).';
-  function say(scene, id) {
+  const IDLE = 'Nothing selected. Click or tap an element to select it, then drag it to move it (preview only: nothing is edited or saved).';
+  const pt = (n) => `${Math.round(n * 10) / 10}`;
+  /** Status line. `mv` = the selected element's temporary preview offset in slide points (Phase 3.2.3-A), shown only while it is not zero. */
+  function say(scene, id, mv) {
     const e = id && scene?.byId.get(id);
-    selNote.textContent = e ? `Selected: ${KIND[e.kind] || e.kind}${e.name ? ` “${e.name}”` : ''} (${e.id})` : scene ? IDLE : '';
+    const moved = e && mv && (mv.dx || mv.dy) ? `. Moved in the preview by ${pt(mv.dx)} pt, ${pt(mv.dy)} pt (not saved)` : '';
+    selNote.textContent = e ? `Selected: ${KIND[e.kind] || e.kind}${e.name ? ` “${e.name}”` : ''} (${e.id})${moved}` : scene ? IDLE : '';
   }
 
   async function draw(i) {
@@ -79,7 +82,10 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
       const fit = () => handle.setWidth(frame.clientWidth);
       fit();
       if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(() => fit()); ro.observe(frame); }
-      sel = attachSelection(handle, scene, { onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id); } });
+      sel = attachSelection(handle, scene, {
+        onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null); },
+        onMove: (m) => { if (m.phase !== 'start') say(scene, m.id, m); }, // the move is a preview: it ends with this drawn slide
+      });
       if (!(picked && sel.select(picked.id))) { picked = null; say(scene, null); } // drawn again (tab shown again): the same element stays selected
       const rep = handle.report();
       handle.fitText();
