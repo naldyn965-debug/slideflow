@@ -1,5 +1,6 @@
-// Element selection (Phase 3.2.1). SELECTION ONLY: it never moves, resizes, edits or saves anything, never touches the OOXML, and adds nothing to the drawn
-// slide until an element is selected (one outline <div> while a selection exists, removed again by clear()).
+// Element selection (Phase 3.2.1), with the move of the selected element on top of it (3.2.3-A preview, 3.2.3-B committed to a temporary edit-state, 3.2.3-C hardening) and a resize PREVIEW (3.2.4-A); see the sections below.
+// It never rotates, edits the text or saves anything, never touches the OOXML, and adds nothing to the drawn slide until an element is selected (one outline <div> while a
+// selection exists, removed again by clear(); the only other traces are a moved element's `translate` and a resized element's `transform`, both put back by reset() / dispose()).
 //
 // The selected element is identified by its stable Scene Model id (the same string as scene.byId keys and the `data-id` on the drawn element).
 //
@@ -15,8 +16,8 @@
 // so the element that is visually on top at that point is the one selected. Hairline outlines (a 1 pt line is under 1 px wide) additionally get a small reach
 // around the pointer (SLOP), measured against the real path, so lines and connectors can be hit with a mouse and a finger.
 //
-// While an element is selected its outline carries 8 resize handles and one rotation handle above the top-centre one (Phase 3.2.2-A / B). They are VISUAL ONLY: pointer-events none, no cursor, no listeners, so selection and
-// touch behave exactly as before and nothing can be resized or rotated.
+// While an element is selected its outline carries 8 resize handles and one rotation handle above the top-centre one (Phase 3.2.2-A / B). They are still transparent to input
+// (pointer-events none, no listeners of their own, so what is under them is picked exactly as before); the 8 resize handles are found by GEOMETRY instead (3.2.4-A, below); the rotation handle is inert, nothing can be rotated.
 //
 // A selection is a click or a tap: press and release of the same primary pointer within TAP px, no cancel (a touch that turns into a scroll or pinch is
 // cancelled by the browser, a mouse drag that selects text moves too far). Nothing is prevented or captured, so text can still be selected and copied.
@@ -28,19 +29,56 @@
 //     (a group child's `world` is already flattened into slide space) are untouched, and the outline and its 9 handles move with the element for free. The offset is kept in slide POINTS and
 //     scaled by --u, so it stays exact at every zoom level, also when the slide is resized during or after the move.
 //   - Accuracy: the pointer is converted to slide points (client px / px per point) on press and on every move, so the element follows the pointer exactly at any zoom, also when the page scrolls under a held mouse.
-//   - The element's centre is kept inside the slide (a clamp), so an element can always be grabbed again; this is a preview only, there is no undo control yet (reset() or drawing the slide again undoes it).
+//   - The element's centre is kept inside the slide (a clamp), so an element can always be grabbed again; on its own this is a preview only (without an `edits` option, reset(), dispose() or drawing the slide again undoes it; with one, see 3.2.3-B below). There is no undo control in the UI yet.
 //   - Cancel is safe: pointercancel, losing pointer capture, a second finger, a right/middle button, the window losing focus, the primary button released unseen, Escape, or select / clear / dispose mid-drag
 //     all put the element back at its position from before this drag. Only a pointerup of the dragging pointer keeps the move.
 //   - Touch: the selected element (only) gets `touch-action: none` so a finger drag on it moves it instead of scrolling the page (unselected elements and the slide itself keep `touch-action: auto`).
 //     A finger that starts beside a hairline (outside its painted pixels) still scrolls the page and cancels, as before.
 //   - Hit-testing follows the moved element: elementsFromPoint honours `translate`, and the hairline test subtracts the offset (nearOutline).
+//
+// COMMITTED MOVES (Phase 3.2.3-B). With an `edits` option (js/model/edit-state.js) a COMPLETED drag (the pointerup of the dragging pointer, nothing else) is committed to that temporary edit-state, which
+// converts the slide-space offset to the parent group's local coordinates. The edit-state is the host's, not this controller's: dispose() only takes the preview off the drawn slide, the committed
+// moves stay in the edit-state, and a controller attached to the same slide again (a redraw, another slide and back, another tab and back) draws them where they were left. Cancelling a drag
+// never reaches the edit-state, so an earlier committed move is exactly what it was. Still nothing is written to the Scene Model or the OOXML, nothing is saved or exported. reset() is the
+// explicit undo: it also forgets the committed moves of this slide. Without `edits` the controller behaves as in 3.2.3-A (a preview that ends with the controller).
+//
+// STRAY POINTERUP (Phase 3.2.3-C). Only the pointerup of the pointer that pressed counts, as with pointermove. A pointerup of any other pointer (another finger's or pen's release, a release that belongs to a press
+// made elsewhere) is ignored: it neither drops a press that is still pending (the drag would never start) nor leaves an open drag without its release (the element would stop following and never be kept or
+// committed). The release that does count still decides as before: drag kept (and committed), or click.
+//
+// RESIZE PREVIEW (Phase 3.2.4-A). A press within reach (HREACH, CSS px, by pointer type) of a visible resize handle of the SELECTED element, travelling more than TAP px, drags that handle. A press
+// that does not travel is a click as before (it selects what is under the pointer). The handles stay transparent to input; handleAt() finds the nearest handle centre from their boxes, and
+// skips the ones the small-frame rule hides. Like the move it is a TEMPORARY PREVIEW: the Scene Model, the OOXML, the edit-state and storage are never touched, nothing is saved or exported.
+//   - Math: the pointer's travel since the press (slide points, so any zoom) is projected on the element's own rotated axes; the dragged edge(s) move by that much, the opposite edge / corner stays
+//     (a corner moves both axes, an edge handle one; no aspect lock yet); the size stops at MIN_PT and at MAX_TIMES slide sizes; an axis the file gives under FLAT_PT (a line's zero height) is left alone.
+//   - Drawing: the node is not re-laid out, it is STRETCHED: its `transform` becomes `translate(shift) <the rotation the renderer gave it> scale(sx, sy)` (scaled about its centre in its own frame, then
+//     turned, then shifted in slide space; the original text is kept in tf0 and put back). Flips live inside the drawing (the svg), group transforms are already in the element's world frame, so both
+//     are untouched. Text and pictures are stretched with it; PowerPoint would re-flow the text, which is for the step that commits a resize. The outline gets the resized frame itself (styleOutline)
+//     and is not scaled, so the handles keep their screen size. The move `translate` is a separate property and is kept as it is; a move after a resize moves the stretched element.
+//   - Cancel is the same as for a move (pointercancel, lost capture, a second finger, another button, blur, Escape, select / clear / dispose): the frame goes back to the size from before this drag, an earlier kept
+//     resize stays. A kept resize stays until reset() or dispose(); it is NOT committed to the edit-state and is not drawn again by the next controller.
+//   - Cursor: hovering a handle sets the matching resize cursor on the slide and on the selected node (turned with the element's rotation). Touch: a finger that starts on a handle must not scroll the
+//     page, and half of each handle is outside the element, so a non-passive `touchstart` listener cancels the scroll for touches that start within reach of a handle.
+//   - Hit-testing follows the stretched element: elementsFromPoint honours the transform, the hairline test maps the pointer back to the file frame (nearOutline, sizeOf).
 const E = 12700;
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']; // Phase 3.2.2-A: purely visual resize handles (positioned by css/render.css); they take no pointer events and do nothing yet
+const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']; // Phase 3.2.2-A: the resize handles (positioned by css/render.css); they take no pointer events: a press on one is found by geometry (handleAt, Phase 3.2.4-A)
 const TAP = { mouse: 4, pen: 6, touch: 10 }; // max pointer travel (CSS px) between press and release
 const SLOP = { mouse: 3, pen: 6, touch: 10 }; // reach around the pointer (CSS px) for hairline outlines
 const r3 = (n) => Math.round(n * 1000) / 1000;
+const r6 = (n) => Math.round(n * 1e6) / 1e6;
 const ZERO = Object.freeze({ dx: 0, dy: 0 });
+// Resize preview (Phase 3.2.4-A). Handle -> direction of the dragged edge(s) in the element's own frame; reach (CSS px) around a handle's centre that a press must be within; smallest preview size (pt);
+// an axis the file gives less than 1 pt (a line's zero height) cannot be resized by scaling and stays as it is.
+const DIRS = { nw: [-1, -1], n: [0, -1], ne: [1, -1], e: [1, 0], se: [1, 1], s: [0, 1], sw: [-1, 1], w: [-1, 0] };
+const ANGLE = { e: 0, se: 45, s: 90, sw: 135, w: 180, nw: 225, n: 270, ne: 315 };
+const CURSORS = ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'];
+const HREACH = { mouse: 7, pen: 10, touch: 16 };
+const MIN_PT = 2; const FLAT_PT = 1; const MAX_TIMES = 4;
+/** Resize cursor for a handle on an element rotated by `rot` degrees (the handle turns with the element). */
+const cursorFor = (k, rot) => CURSORS[((Math.round((((ANGLE[k] + (rot || 0)) % 360) + 360) % 360 / 45) % 8) + 8) % 4];
+/** Scale factors [sx, sy] of a resize record against the file frame `W` (a flat axis is never scaled). */
+const scaleOf = (W, r) => { const w = W.w / E; const h = W.h / E; return [r && w >= FLAT_PT ? r.w / w : 1, r && h >= FLAT_PT ? r.h / h : 1]; };
 
 /** Ids that may be selected on this slide (see the header). */
 const selectable = (scene, handle, id) => {
@@ -72,7 +110,7 @@ function toFrame(W, px, py) {
 }
 
 /** Highest element whose hairline outline (a path with an outline and no fill) passes within `reachPx` of the client point, or null. */
-function nearOutline(root, handle, scene, x, y, reachPx, offsetOf = () => ZERO) {
+function nearOutline(root, handle, scene, x, y, reachPx, offsetOf = () => ZERO, sizeOf = () => null) {
   const r = root.getBoundingClientRect(); const u = r.width / (scene.width / E);
   if (!(u > 0)) return null;
   const px = (x - r.left) / u; const py = (y - r.top) / u; const reach = reachPx / u;
@@ -83,8 +121,10 @@ function nearOutline(root, handle, scene, x, y, reachPx, offsetOf = () => ZERO) 
       const e = scene.byId.get(id); const W = e.world;
       if (!W || (best && e.z < best.z)) continue;
       const off = offsetOf(id); // the element may have been moved in the preview: its world frame is where the scene put it, the pointer is tested against where it is drawn
-      const [fx, fy] = toFrame(W, px - off.dx, py - off.dy);
+      const rs = sizeOf(id); // ... and may have been resized in the preview: the drawn frame is the file frame scaled about its centre and shifted
+      let [fx, fy] = toFrame(W, px - off.dx - (rs ? rs.tx : 0), py - off.dy - (rs ? rs.ty : 0));
       const w = W.w / E; const hh = W.h / E;
+      if (rs) { const [kx, ky] = scaleOf(W, rs); fx = (fx - w / 2) / kx + w / 2; fy = (fy - hh / 2) / ky + hh / 2; }
       for (const p of node.querySelectorAll('.sf-geo > path')) {
         if (p.getAttribute('fill') !== 'none' || p.getAttribute('stroke') === 'none') continue;
         const sw = parseFloat(p.getAttribute('stroke-width')) || 0.25;
@@ -109,20 +149,25 @@ function nearOutline(root, handle, scene, x, y, reachPx, offsetOf = () => ZERO) 
 /**
  * Attach selection to one rendered slide. `handle` is what renderSlide() returned, `scene` the scene it drew.
  * Returns { id, pick(x, y, pointerType), select(id), clear(), offset(id), reset(), dragging, dispose() }. `onChange(id|null)` fires whenever the selection changes.
- * `onMove({ id, dx, dy, phase })` (Phase 3.2.3-A, preview only) fires when a drag starts ('start'), is kept ('end') or is undone ('cancel'); dx / dy are the element's preview offset in slide points.
+ * `onMove({ id, dx, dy, phase })` (Phase 3.2.3-A) fires when a drag starts ('start'), is kept ('end') or is undone ('cancel'); dx / dy are the element's preview offset in slide points.
+ * `edits` (Phase 3.2.3-B, optional) is the deck's temporary edit-state: completed moves are committed to it and its moves for this slide are drawn on attach (see the header).
  */
-export function attachSelection(handle, scene, { onChange, onMove } = {}) {
+export function attachSelection(handle, scene, { onChange, onMove, onResize, edits } = {}) {
   const { root } = handle;
   let selected = null; let outline = null; let down = null;
   const offsets = new Map(); // id -> { dx, dy } preview offset in slide points (never written to the scene)
-  let drag = null; // { id, pid, from: { dx, dy } } while an element is being dragged
+  const sizes = new Map(); // id -> { w, h, tx, ty } resize preview (Phase 3.2.4-A): the frame as drawn, in slide points: size, and the shift of its centre from the file frame's (never written to the scene)
+  const tf0 = new Map(); // id -> the `transform` the renderer gave the node (its rotation), put back when the resize preview goes
+  let curNow = ''; // resize cursor currently shown
+  let drag = null; // { id, pid, from: { dx, dy }, hdl, fromSize } while an element is being dragged (hdl: the handle of a resize drag, null for a move)
   const offsetOf = (id) => offsets.get(id) || ZERO;
+  const sizeOf = (id) => sizes.get(id) || null;
 
   /** The id of the element that is visually on top at a client point, or null for empty space. */
   function pick(x, y, pointerType = 'mouse') {
     const type = SLOP[pointerType] ? pointerType : 'mouse';
     const top = paintedAt(root, handle, scene, x, y)[0] || null;
-    const near = nearOutline(root, handle, scene, x, y, SLOP[type], offsetOf);
+    const near = nearOutline(root, handle, scene, x, y, SLOP[type], offsetOf, sizeOf);
     const hit = near && (!top || near.z > top.z) ? near : top; // an outline within reach wins only when it is above what is exactly under the pointer
     return hit ? hit.id : null;
   }
@@ -132,10 +177,7 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
     // zero-height line still shows, kept centred on the element.
     const n = handle.nodes.get(id).style;
     const o = document.createElement('div'); o.className = 'sf-sel'; o.dataset.for = id; o.setAttribute('aria-hidden', 'true');
-    const W = `max(${n.width}, 6px)`; const H = `max(${n.height}, 6px)`;
-    o.style.width = W; o.style.height = H;
-    o.style.left = `calc(${n.left} - (${W} - ${n.width}) / 2)`; o.style.top = `calc(${n.top} - (${H} - ${n.height}) / 2)`;
-    if (n.transform) o.style.transform = n.transform;
+    styleOutline(o, id);
     const tr = n.getPropertyValue('translate'); if (tr) o.style.setProperty('translate', tr); // a moved element is selected again: the outline starts where it is drawn
     // 8 handles (corners + edge centres) as children of the outline: they sit at percentages of the same frame, so rotation, scale and zoom follow it for free
     const hs = document.createElement('div'); hs.className = 'sf-sel-h'; hs.setAttribute('aria-hidden', 'true');
@@ -144,6 +186,18 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
     o.append(hs);
     root.append(o);
     return o;
+  }
+
+  /** Frame and rotation of the outline: the node's own (so a rotated or moved element is followed), or, when the element is resized in the preview, the resized frame (the node itself is only scaled by a
+   *  `transform`, the outline is not, so its handles keep their screen size). */
+  function styleOutline(o, id) {
+    const n = handle.nodes.get(id).style; const r = sizes.get(id); const W = scene.byId.get(id)?.world;
+    let left = n.left; let top = n.top; let width = n.width; let height = n.height; const tf = tf0.has(id) ? tf0.get(id) : n.transform;
+    if (r && W) { const L2 = (v) => `calc(var(--u) * ${r3(v)})`; width = L2(r.w); height = L2(r.h); left = L2(W.cx / E + r.tx - r.w / 2); top = L2(W.cy / E + r.ty - r.h / 2); }
+    const Wd = `max(${width}, 6px)`; const Ht = `max(${height}, 6px)`;
+    o.style.width = Wd; o.style.height = Ht;
+    o.style.left = `calc(${left} - (${Wd} - ${width}) / 2)`; o.style.top = `calc(${top} - (${Ht} - ${height}) / 2)`;
+    if (tf) o.style.transform = tf; else o.style.removeProperty('transform');
   }
 
   // ---- move preview (Phase 3.2.3-A) ----
@@ -162,7 +216,7 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
   /** Keep the element's centre inside the slide so it can always be grabbed again. */
   function clampOffset(id, o) {
     const W = scene.byId.get(id)?.world; if (!W) return o;
-    const sw = scene.width / E; const sh = scene.height / E; const cx = W.cx / E; const cy = W.cy / E;
+    const rs = sizes.get(id); const sw = scene.width / E; const sh = scene.height / E; const cx = W.cx / E + (rs ? rs.tx : 0); const cy = W.cy / E + (rs ? rs.ty : 0); // the centre as drawn (a resized element's centre has shifted)
     return { dx: Math.min(sw - cx, Math.max(-cx, o.dx)), dy: Math.min(sh - cy, Math.max(-cy, o.dy)) };
   }
   /** Client px -> slide points on the slide as it is drawn now (any zoom, any scroll), or null while the slide has no size (tab not showing). */
@@ -170,39 +224,96 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
     const r = root.getBoundingClientRect(); const u = r.width / (scene.width / E);
     return u > 0 ? [(x - r.left) / u, (y - r.top) / u] : null;
   }
+  // ---- resize preview (Phase 3.2.4-A) ----
+  /** The handle (key of DIRS) whose centre is within reach of a client point, nearest first, or null. A handle hidden by the small-frame rule has no box and is skipped. */
+  function handleAt(x, y, type) {
+    if (!outline) return null;
+    let best = null; let bd = Infinity;
+    for (const hd of outline.querySelectorAll('.sf-hdl')) {
+      const r = hd.getBoundingClientRect(); if (!(r.width > 0)) continue;
+      const dist = Math.hypot(x - (r.left + r.width / 2), y - (r.top + r.height / 2));
+      if (dist <= HREACH[type] && dist < bd) { bd = dist; best = hd.dataset.h; }
+    }
+    return best;
+  }
+  function setCursor(v) { // the handles are transparent to input, so the resize cursor is set on the slide (and on the selected node, which has its own `move` cursor)
+    if (v === curNow) return; curNow = v;
+    if (v) root.style.cursor = v; else root.style.removeProperty('cursor');
+    const n = selected != null ? handle.nodes.get(selected) : null; if (n) n.style.cursor = v || 'move';
+  }
+  const rotOf = (id) => scene.byId.get(id)?.world?.rot || 0;
+  const frameOf = (id) => { const W = scene.byId.get(id).world; return sizes.get(id) || { w: W.w / E, h: W.h / E, tx: 0, ty: 0 }; };
+  /** Draw the resize preview of `id`: its node gets `translate(shift) <its own rotation> scale(sx, sy)` as `transform` (scaled about its centre in its own frame, then turned, then shifted), its outline the resized frame. */
+  function placeSize(id) {
+    const n = handle.nodes.get(id); if (!n) return;
+    const r = sizes.get(id); const W = scene.byId.get(id)?.world;
+    if (r && W) {
+      if (!tf0.has(id)) tf0.set(id, n.style.transform);
+      const [kx, ky] = scaleOf(W, r);
+      n.style.transform = `translate(calc(var(--u) * ${r3(r.tx)}), calc(var(--u) * ${r3(r.ty)})) ${tf0.get(id)} scale(${r6(kx)}, ${r6(ky)})`.replace(/\s+/g, ' ');
+    } else if (tf0.has(id)) { const t = tf0.get(id); if (t) n.style.transform = t; else n.style.removeProperty('transform'); tf0.delete(id); }
+    if (outline && selected === id) styleOutline(outline, id);
+  }
+  function setSize(id, r) {
+    const W = scene.byId.get(id)?.world; if (!W) return;
+    const same = !r || (Math.abs(r.w - W.w / E) < 1e-9 && Math.abs(r.h - W.h / E) < 1e-9 && Math.abs(r.tx) < 1e-9 && Math.abs(r.ty) < 1e-9);
+    if (same) sizes.delete(id); else sizes.set(id, { w: r.w, h: r.h, tx: r.tx, ty: r.ty });
+    placeSize(id);
+  }
+  const sizeInfo = (id) => { const W = scene.byId.get(id)?.world; const f = frameOf(id); return { w: f.w, h: f.h, dw: f.w - W.w / E, dh: f.h - W.h / E }; };
+  /** Resize drag: the dragged edge(s) follow the pointer's travel since the press, measured in the element's own (rotated) frame; the opposite edge / corner stays where it was. */
+  function resizeTo(p, d) {
+    const W = scene.byId.get(drag.id)?.world; if (!W) return;
+    const f = drag.fromSize || { w: W.w / E, h: W.h / E, tx: 0, ty: 0 };
+    const [sx, sy] = DIRS[drag.hdl]; const t = (rotOf(drag.id) * Math.PI) / 180; const c = Math.cos(t); const s = Math.sin(t);
+    const dx = p[0] - d.p0[0]; const dy = p[1] - d.p0[1];
+    const fx = dx * c + dy * s; const fy = -dx * s + dy * c;
+    const w = sx && W.w / E >= FLAT_PT ? Math.min(MAX_TIMES * (scene.width / E), Math.max(Math.min(MIN_PT, f.w), f.w + sx * fx)) : f.w;
+    const h = sy && W.h / E >= FLAT_PT ? Math.min(MAX_TIMES * (scene.height / E), Math.max(Math.min(MIN_PT, f.h), f.h + sy * fy)) : f.h;
+    const ax = (sx * (w - f.w)) / 2; const ay = (sy * (h - f.h)) / 2;
+    setSize(drag.id, { w, h, tx: f.tx + ax * c - ay * s, ty: f.ty + ax * s + ay * c });
+  }
   const blockSelect = (e) => e.preventDefault(); // no text selection while an element is being dragged
   const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finishDrag(false); } };
   const onBlur = () => finishDrag(false);
   function beginDrag(d) {
     if (drag || !selected || !d.p0) return false;
-    drag = { id: selected, pid: d.id, from: { ...offsetOf(selected) } };
+    drag = { id: selected, pid: d.id, from: { ...offsetOf(selected) }, hdl: d.hdl || null, fromSize: d.hdl ? sizeOf(selected) : null };
+    if (drag.hdl) setCursor(cursorFor(drag.hdl, rotOf(selected)));
     try { root.setPointerCapture(d.id); } catch { /* the pointer is already gone: its pointerup / pointercancel will not come, the next event ends the drag */ }
     root.style.userSelect = 'none'; globalThis.getSelection?.()?.removeAllRanges();
     document.addEventListener('keydown', onKey, true); document.addEventListener('selectstart', blockSelect, true); window.addEventListener('blur', onBlur);
-    onMove?.({ id: drag.id, ...offsetOf(drag.id), phase: 'start' });
+    if (drag.hdl) onResize?.({ id: drag.id, ...sizeInfo(drag.id), phase: 'start' }); else onMove?.({ id: drag.id, ...offsetOf(drag.id), phase: 'start' });
     return true;
   }
   /** Put the dragged element where the pointer is (relative to where it was pressed, both measured on the slide as drawn now). */
   function follow(e, d) {
     const p = drag && slidePt(e.clientX, e.clientY); if (!p) return;
+    if (drag.hdl) { resizeTo(p, d); return; }
     setOffset(drag.id, clampOffset(drag.id, { dx: drag.from.dx + p[0] - d.p0[0], dy: drag.from.dy + p[1] - d.p0[1] }));
   }
-  /** End the drag. keep = the move stays (pointerup); otherwise the element goes back to where it was before this drag. */
+  /** End the drag. keep = the move stays (pointerup); otherwise the element goes back to where it was before this drag. A kept move is committed to the edit-state (when there is one);
+   *  if that refuses it (a parent group that cannot be inverted) the drag counts as cancelled, so the drawn slide never shows a move the edit-state does not hold. */
   function finishDrag(keep) {
     if (!drag) return;
     const dr = drag; drag = null;
-    if (!keep) setOffset(dr.id, dr.from);
+    if (dr.hdl) { if (!keep) setSize(dr.id, dr.fromSize); } // a resize is a preview only: nothing is committed anywhere
+    else {
+      if (keep && edits) { const o = offsetOf(dr.id); if (!edits.commit(scene, dr.id, o.dx, o.dy).ok) keep = false; }
+      if (!keep) setOffset(dr.id, dr.from);
+    }
+    setCursor('');
     try { root.releasePointerCapture(dr.pid); } catch { /* not captured any more */ }
     root.style.removeProperty('user-select');
     document.removeEventListener('keydown', onKey, true); document.removeEventListener('selectstart', blockSelect, true); window.removeEventListener('blur', onBlur);
     down = null;
-    onMove?.({ id: dr.id, ...offsetOf(dr.id), phase: keep ? 'end' : 'cancel' });
+    if (dr.hdl) onResize?.({ id: dr.id, ...sizeInfo(dr.id), phase: keep ? 'end' : 'cancel' }); else onMove?.({ id: dr.id, ...offsetOf(dr.id), phase: keep ? 'end' : 'cancel' });
   }
 
   function select(id) {
     if (!selectable(scene, handle, id)) return false;
     if (id === selected) return true;
-    finishDrag(false);
+    finishDrag(false); setCursor('');
     if (selected != null) grabbable(selected, false);
     outline?.remove();
     outline = drawOutline(id); selected = id; grabbable(id, true);
@@ -211,7 +322,7 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
   }
   function clear() {
     if (selected == null) return;
-    finishDrag(false);
+    finishDrag(false); setCursor('');
     grabbable(selected, false);
     outline?.remove(); outline = null; selected = null;
     onChange?.(null);
@@ -223,10 +334,16 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
     if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) { down = null; return; } // a second finger or a non-primary button is not a click
     down = { id: e.pointerId, x: e.clientX, y: e.clientY, type: typeOf(e) };
     // pressed on the element that is already selected (and visually on top there): this press may become a drag
-    if (selected && pick(e.clientX, e.clientY, down.type) === selected) { down.p0 = slidePt(e.clientX, e.clientY); down.grab = !!down.p0; }
+    const hd = selected ? handleAt(e.clientX, e.clientY, down.type) : null; // a handle of the selected element (they are transparent to input, so this is found by geometry): this press may become a resize
+    if (hd) { down.p0 = slidePt(e.clientX, e.clientY); down.grab = !!down.p0; if (down.grab) down.hdl = hd; }
+    else if (selected && pick(e.clientX, e.clientY, down.type) === selected) { down.p0 = slidePt(e.clientX, e.clientY); down.grab = !!down.p0; }
   };
+  // a finger that starts on a handle resizes instead of scrolling the page (the handles are transparent to input and half of them lie outside the element, so touch-action cannot do this)
+  const onTouchStart = (e) => { if (selected != null && e.touches.length === 1 && e.cancelable && handleAt(e.touches[0].clientX, e.touches[0].clientY, 'touch')) e.preventDefault(); };
   const onPointerMove = (e) => {
-    const d = down; if (!d || !d.grab || e.pointerId !== d.id) return;
+    const d = down;
+    if (!d) { if (e.pointerType !== 'touch' && selected != null && !drag) { const k = handleAt(e.clientX, e.clientY, typeOf(e)); setCursor(k ? cursorFor(k, rotOf(selected)) : ''); } return; } // no press: the resize cursor over a handle
+    if (!d.grab || e.pointerId !== d.id) return;
     if (d.type === 'mouse' && !(e.buttons & 1)) { // the button was released where we could not see it (a dialog, another window): finish like a release instead of sticking to the pointer
       if (drag) finishDrag(true); down = null; return;
     }
@@ -234,7 +351,8 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
     follow(e, d);
   };
   const onUp = (e) => {
-    const d = down; down = null;
+    const d = down; if (!d || e.pointerId !== d.id) return; // a stray pointerup (no press of ours in flight, or another pointer's release) is not ours: it neither drops the pending press nor orphans an open drag
+    down = null;
     if (d?.grab && e.pointerId === d.id) {
       if (!drag && Math.hypot(e.clientX - d.x, e.clientY - d.y) > TAP[d.type]) beginDrag(d); // released far from the press without a move event in between: still a drag
       if (drag) { follow(e, d); finishDrag(true); return; } // a drag is never also a click
@@ -246,7 +364,10 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
   const onCancel = () => { finishDrag(false); down = null; };
   const onLost = (e) => { if (drag && e.target === root && e.pointerId === drag.pid) finishDrag(false); }; // capture taken away before the pointer was released (a descendant losing implicit touch capture is not that)
   const onDragStart = (e) => { if (down?.grab || drag) e.preventDefault(); }; // the browser's own drag-and-drop of a text selection would cancel the pointer
+  // moves committed earlier on this slide (a redraw, another slide and back, another tab and back) are drawn where they were left, before anything is selected
+  if (edits) for (const m of edits.forSlide(scene.part)) if (selectable(scene, handle, m.id)) setOffset(m.id, m.slideDelta);
   root.addEventListener('pointerdown', onDown);
+  root.addEventListener('touchstart', onTouchStart, { passive: false });
   root.addEventListener('pointermove', onPointerMove);
   root.addEventListener('pointerup', onUp);
   root.addEventListener('pointercancel', onCancel);
@@ -256,14 +377,18 @@ export function attachSelection(handle, scene, { onChange, onMove } = {}) {
   return {
     get id() { return selected; },
     get dragging() { return drag ? drag.id : null; },
+    /** The handle ('nw' … 'w') of the resize drag in progress, or null (no drag, or a move). */
+    get resizing() { return drag ? drag.hdl : null; },
     pick, select, clear,
     /** The preview offset of an element in slide points ({ dx: 0, dy: 0 } when it has not been moved). */
     offset(id) { return { ...offsetOf(id) }; },
-    /** Put every moved element back (the preview only: there was nothing to undo in the scene). */
-    reset() { finishDrag(false); for (const id of [...offsets.keys()]) setOffset(id, ZERO); },
+    /** Put every moved element of this slide back at its file position, committed moves included (the explicit undo: there is nothing to undo in the scene). */
+    reset() { finishDrag(false); for (const id of [...sizes.keys()]) setSize(id, null); for (const id of [...offsets.keys()]) { setOffset(id, ZERO); edits?.discard(id); } },
+    /** The resize preview of an element in slide points: { w, h } as drawn and { dw, dh } against the file ({ dw: 0, dh: 0 } when it has not been resized). Never committed anywhere. */
+    size(id) { return sizeInfo(id); },
     dispose() {
-      finishDrag(false); for (const id of [...offsets.keys()]) setOffset(id, ZERO); // the preview moves go with the controller: nothing is left on the drawn slide
-      root.removeEventListener('pointerdown', onDown); root.removeEventListener('pointermove', onPointerMove); root.removeEventListener('pointerup', onUp); root.removeEventListener('pointercancel', onCancel);
+      finishDrag(false); setCursor(''); for (const id of [...sizes.keys()]) setSize(id, null); for (const id of [...offsets.keys()]) setOffset(id, ZERO); // the preview goes off the drawn slide; committed moves stay in the edit-state and are drawn again by the next controller
+      root.removeEventListener('pointerdown', onDown); root.removeEventListener('touchstart', onTouchStart); root.removeEventListener('pointermove', onPointerMove); root.removeEventListener('pointerup', onUp); root.removeEventListener('pointercancel', onCancel);
       root.removeEventListener('lostpointercapture', onLost); root.removeEventListener('dragstart', onDragStart);
       if (selected != null) grabbable(selected, false);
       outline?.remove(); outline = null; selected = null; down = null;
