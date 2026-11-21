@@ -6,6 +6,7 @@ import { plural } from '../lib/format.js';
 import { buildScene } from '../model/scene.js';
 import { renderSlide } from '../render/render.js';
 import { attachSelection } from '../render/selection.js';
+import { editStateOf } from '../model/edit-state.js';
 import { loadStyles } from '../render/fonts.js';
 import { errorState, friendly, spinner } from './states.js';
 
@@ -15,6 +16,7 @@ const KIND = { shape: 'Shape', image: 'Picture', line: 'Line', group: 'Group', t
 /** Returns { el, goto(i), show(), hide(), dispose() }. `onPick(i)` asks the host to change the selected slide. */
 export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
   const scenes = new Map();
+  const edits = editStateOf(parsed); // Phase 3.2.3-B: completed moves, kept in memory for as long as this deck is open (temporary: nothing is written to the file or saved)
   let handle = null; let token = 0; let visible = false; let index = -1; let ro = null;
   let sel = null; let picked = null; // Phase 3.2.1: the selection controller of the drawn slide, and { slide, id } of the selected element (kept when the same slide is drawn again, dropped on any other slide)
 
@@ -55,11 +57,12 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
 
   const IDLE = 'Nothing selected. Click or tap an element to select it, then drag it to move it (preview only: nothing is edited or saved).';
   const pt = (n) => `${Math.round(n * 10) / 10}`;
-  /** Status line. `mv` = the selected element's temporary preview offset in slide points (Phase 3.2.3-A), shown only while it is not zero. */
-  function say(scene, id, mv) {
+  /** Status line. `mv` = the selected element's temporary preview offset in slide points (Phase 3.2.3-A), shown only while it is not zero; `rs` = its temporary resize preview (Phase 3.2.4-A), shown only while its size differs from the file's. */
+  function say(scene, id, mv, rs) {
     const e = id && scene?.byId.get(id);
     const moved = e && mv && (mv.dx || mv.dy) ? `. Moved in the preview by ${pt(mv.dx)} pt, ${pt(mv.dy)} pt (not saved)` : '';
-    selNote.textContent = e ? `Selected: ${KIND[e.kind] || e.kind}${e.name ? ` “${e.name}”` : ''} (${e.id})${moved}` : scene ? IDLE : '';
+    const sized = e && rs && (rs.dw || rs.dh) ? `. Resized in the preview to ${pt(rs.w)} × ${pt(rs.h)} pt (not saved)` : '';
+    selNote.textContent = e ? `Selected: ${KIND[e.kind] || e.kind}${e.name ? ` “${e.name}”` : ''} (${e.id})${moved}${sized}` : scene ? IDLE : '';
   }
 
   async function draw(i) {
@@ -83,8 +86,10 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
       fit();
       if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(() => fit()); ro.observe(frame); }
       sel = attachSelection(handle, scene, {
-        onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null); },
-        onMove: (m) => { if (m.phase !== 'start') say(scene, m.id, m); }, // the move is a preview: it ends with this drawn slide
+        onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null, id && sel ? sel.size(id) : null); },
+        onMove: (m) => { if (m.phase !== 'start') say(scene, m.id, m, sel ? sel.size(m.id) : null); }, // a completed move is committed to the temporary edit-state, which draws it again on every redraw of this slide
+        onResize: (r) => { if (r.phase !== 'start') say(scene, r.id, sel ? sel.offset(r.id) : null, r); }, // a resize is a preview only: it is not committed anywhere and goes with this slide's controller
+        edits,
       });
       if (!(picked && sel.select(picked.id))) { picked = null; say(scene, null); } // drawn again (tab shown again): the same element stays selected
       const rep = handle.report();
@@ -108,6 +113,6 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
     goto(i) { index = i; mark(i); if (visible) draw(i); },
     show() { visible = true; el.hidden = false; if (index < 0) index = current(); mark(index); draw(index); },
     hide() { visible = false; token++; },
-    dispose() { token++; ro?.disconnect(); sel?.dispose(); sel = null; handle?.dispose(); handle = null; scenes.clear(); },
+    dispose() { token++; ro?.disconnect(); sel?.dispose(); sel = null; handle?.dispose(); handle = null; scenes.clear(); edits.clear(); },
   };
 }
