@@ -1,0 +1,45 @@
+/* Rendered tab (Phase 3.1). Static rules only: sizes, positions and colours are set through the CSSOM by js/render/render.js (the CSP forbids inline styles). */
+.sf-stage { display: flex; flex-direction: column; gap: 1rem; }
+.rendered > * { min-width: 0; }
+.sf-holder { width: 100%; min-width: 0; }
+.sf-frame { min-width: 0; position: relative; width: 100%; max-width: 1100px; margin-inline: auto; }
+.sf-slide { --u: 1px; position: relative; overflow: hidden; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25); font-kerning: normal; text-rendering: optimizeLegibility; user-select: text; }
+.sf-slide * { box-sizing: border-box; }
+.sf-el { position: absolute; transform-origin: 50% 50%; }
+.sf-el[hidden] { display: none; }
+.sf-group { pointer-events: none; }
+.sf-geo { position: absolute; left: 0; top: 0; overflow: visible; display: block; }
+.sf-text { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: visible; }
+.sf-text-in { width: 100%; }
+.sf-p { margin: 0; padding: 0; line-height: normal; overflow-wrap: break-word; word-break: normal; white-space: pre-wrap; }
+.sf-p:first-child { margin-top: 0 !important; }
+.sf-text[data-wrap="none"] .sf-p { white-space: pre; }
+.sf-bu { display: inline-block; text-indent: 0; white-space: nowrap; }
+.sf-link { cursor: default; }
+.sf-table { border-collapse: collapse; table-layout: fixed; position: absolute; left: 0; top: 0; }
+.sf-table td { overflow: visible; }
+.sf-opaque { border: 1px dashed #7f7f7f; background: repeating-linear-gradient(45deg, #f3f3f3, #f3f3f3 6px, #eaeaea 6px, #eaeaea 12px); display: flex; align-items: center; justify-content: center; text-align: center; color: #444; font: 12px/1.3 system-ui, sans-serif; }
+.sf-opaque-label { padding: 4px 8px; }
+.sf-opaque-sub { opacity: 0.7; font-size: 11px; }
+/* selection outline (Phase 3.2.1): drawn inside the element's own frame so it stays visible at the slide edge; geometry is set through the CSSOM by js/render/selection.js */
+.sf-sel { position: absolute; box-sizing: border-box; pointer-events: none; transform-origin: 50% 50%; container-type: size; border: 2px solid var(--accent, #2c3dd0); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), inset 0 0 0 1px rgba(255, 255, 255, 0.9); }
+/* resize handles (Phase 3.2.2-A; dragging one resizes a preview since Phase 3.2.4-A): 8 small squares centred on the frame's corners and edge midpoints. .sf-sel-h covers the outline's border box, so percentages are the frame itself;
+   being children of the (rotated) outline they rotate with it, and their size is in screen px so zoom never changes them. No pointer events of their own: a press on one is found by geometry in js/render/selection.js (Phase 3.2.4-A resize preview), which also sets the resize cursor on the slide. The selected element can be moved since Phase 3.2.3. */
+.sf-sel-h { position: absolute; inset: -2px; pointer-events: none; --sf-hs: 8px; --sf-rd: 24px; }
+@media (pointer: coarse) { .sf-sel-h { --sf-hs: 10px; --sf-rd: 28px; } }
+.sf-hdl, .sf-rot { position: absolute; box-sizing: border-box; width: var(--sf-hs); height: var(--sf-hs); transform: translate(-50%, -50%); pointer-events: none; cursor: auto; background: #fff; border: 1.5px solid var(--accent, #2c3dd0); border-radius: 2px; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28); }
+/* rotation handle (Phase 3.2.2-B, visual only): same look as the resize handles, round, centred --sf-rd screen px above the frame's top edge in the element's own (rotated) frame, joined to it by a 1 px stem */
+.sf-rot { left: 50%; top: calc(-1 * var(--sf-rd)); border-radius: 50%; }
+.sf-rot::before { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: calc(var(--sf-rd) - var(--sf-hs) / 2); transform: translateX(-50%); background: var(--accent, #2c3dd0); }
+.sf-hdl[data-h="nw"] { left: 0; top: 0; } .sf-hdl[data-h="n"] { left: 50%; top: 0; } .sf-hdl[data-h="ne"] { left: 100%; top: 0; } .sf-hdl[data-h="e"] { left: 100%; top: 50%; }
+.sf-hdl[data-h="se"] { left: 100%; top: 100%; } .sf-hdl[data-h="s"] { left: 50%; top: 100%; } .sf-hdl[data-h="sw"] { left: 0; top: 100%; } .sf-hdl[data-h="w"] { left: 0; top: 50%; }
+/* very small frames: edge-centre handles would pile on top of the corner handles, so they are left out (the outline's content box is the frame minus its 2 px borders) */
+@container (max-width: 27.5px) { .sf-hdl[data-h="n"], .sf-hdl[data-h="s"] { display: none; } }
+@container (max-height: 27.5px) { .sf-hdl[data-h="e"], .sf-hdl[data-h="w"] { display: none; } }
+@container (max-height: 7.5px) { .sf-hdl[data-h="n"], .sf-hdl[data-h="s"] { display: none; } }
+@container (max-width: 7.5px) { .sf-hdl[data-h="e"], .sf-hdl[data-h="w"] { display: none; } }
+/* support badges used by the tab's list, not by the slide itself */
+.sf-badge { display: inline-block; padding: 0 0.5em; border-radius: 999px; font-size: 0.75rem; border: 1px solid currentColor; }
+.sf-badge[data-support="native"] { color: #2e7d32; }
+.sf-badge[data-support="approximated"] { color: #b26a00; }
+.sf-badge[data-support="opaque"] { color: #b3261e; }
