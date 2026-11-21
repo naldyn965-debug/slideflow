@@ -82,7 +82,7 @@ Phase 2 additions
 
 ## Phase 3.1 (Rendered tab)
 
-Automated: `node tests/render.mjs` (670 checks; details, env vars `REAL_PPTX` and `SHOTS`, and the support matrix in `docs/PHASE-3.1-RENDERING.md`).
+Automated: `node tests/render.mjs` (673 checks, 670 when Phase 3.1 shipped plus 3 from the Phase 3.2.1 fixture sweep; details, env vars `REAL_PPTX` and `SHOTS`, and the support matrix in `docs/PHASE-3.1-RENDERING.md`).
 Manual, on your own machine:
 - [ ] Open decks from PowerPoint, Keynote and Google Slides in the Rendered tab and compare with the originals; read the "not drawn exactly" list
 - [ ] Arabic RTL deck authored in PowerPoint: alignment, bullets and mixed Arabic/English runs look right (fonts: see "Adding an Arabic font")
@@ -103,7 +103,7 @@ Automated: `node tests/selection.mjs` now has 200 checks (21 new): 8 handles per
 Manual:
 - [ ] Select shapes, pictures, text boxes, rotated elements on your own decks: handles sit on the corners and edge midpoints and turn with the element
 - [ ] Resize the window and use the phone width: handles stay on the element and keep their size
-- [ ] Click or tap on a handle: nothing happens except the normal selection of whatever is under it
+- [ ] Click or tap on a handle without dragging: nothing happens except the normal selection of whatever is under it (dragging one resizes a preview since Phase 3.2.4-A)
 
 ## Phase 3.2.2-B (rotation handle, visual only)
 
@@ -115,12 +115,41 @@ Manual:
 
 ## Phase 3.2.3-A (move preview: drag the selected element, temporary)
 
-Automated: `node tests/selection.mjs` now has 334 checks (116 new: 93 on the slide harness, 23 in the real UI): real-mouse drag with exact deltas, 50 / 100 / 150 % scale and a zoom change mid-drag, all 15 non-group elements of `p31-geometry` (plain, rotated, flipped, group-nested, lines, text) dragged with a real mouse, the 9 that are large enough checked against the independently computed corners shifted by the drag, the centre clamp, the cancellation and edge cases (pointercancel, Escape, second finger, right button, other pointer, lost button, blur, select / clear / dispose mid-drag, hidden slide), hairline hit-testing after a move, every fixture and real deck (DOM byte-identical after drag + dispose, XML and world frames unchanged), code guards, and the real Rendered tab with mouse and with real touch (CDP): outline and handles follow, status line, `touch-action`, second finger, slide switch and tab switch end the preview. `render.mjs` (673) and `e2e.mjs` (108) are unchanged and pass.
+Automated: `node tests/selection.mjs` had 334 checks at the end of this phase (116 new: 93 on the slide harness, 23 in the real UI; the file now has 544, see 3.2.3-B, 3.2.3-C and 3.2.4-A below): real-mouse drag with exact deltas, 50 / 100 / 150 % scale and a zoom change mid-drag, all 15 non-group elements of `p31-geometry` (plain, rotated, flipped, group-nested, lines, text) dragged with a real mouse, the 9 that are large enough checked against the independently computed corners shifted by the drag, the centre clamp, the cancellation and edge cases (pointercancel, Escape, second finger, right button, other pointer, lost button, blur, select / clear / dispose mid-drag, hidden slide), hairline hit-testing after a move, every fixture and real deck (DOM byte-identical after drag + dispose, XML and world frames unchanged), code guards, and the real Rendered tab with mouse and with real touch (CDP): outline and handles follow, status line, `touch-action`, second finger, slide switch and tab switch end the preview. `render.mjs` (673) and `e2e.mjs` (108) are unchanged and pass.
 Mutation checks (one-off, not committed): ignoring the offset in the hairline test, writing the offset in px instead of `--u`, not reverting on cancel, no clamp, no second-finger cancel and not moving the outline were each caught by the suite.
 Manual, on your own machine and phone:
 - [ ] Select an element on your own decks and drag it with the mouse: it follows the pointer, the outline and handles stay on it, rotated / flipped / grouped elements move in screen directions
 - [ ] Zoom the browser or resize the window and drag again: the element stays under the pointer
 - [ ] Phone or tablet: select by tap, then drag with a finger: it moves and the page does not scroll; a swipe starting on an unselected element still scrolls the page
 - [ ] Press Escape during a drag, or switch app / window: the element jumps back
-- [ ] Switch slide and return: the slide is as in the file; nothing was saved
+- [ ] Switch slide and return: the element is where you left it (Phase 3.2.3-B); close the preview and open the template again: the slide is as in the file; nothing was saved
 
+
+## Phase 3.2.3-B (committed moves, temporary edit-state)
+
+Automated: `node tests/selection.mjs` went from 334 to 447 checks (113 new: 110 in the section "temporary edit-state", 3 added to the real-UI mouse section of 3.2.3-A for slide changes). It covers every grabbable element of `p31-geometry` (plain, rotated, flipped, group-nested, lines, text) dragged with a real mouse and committed, the group-local coordinates against hand-computed values and against a Scene Model rebuilt from a copy of the deck with the committed positions written into it, the pure model (accumulation, zero offset, refusals, singular parents, records handed out as copies, one edit-state per deck), redraws from a rebuilt scene, cancellation never reaching the edit-state, the original XML, the Scene Model and the file staying untouched (every fixture and real deck), and the real Rendered tab (slides, tabs, accumulation, nothing outliving the opened deck). `render.mjs` and `e2e.mjs` are unchanged.
+Manual, on your own machine:
+- [ ] Move an element, switch to another slide and back, leave the Rendered tab and return: it stays where you left it; a second drag continues from there
+- [ ] Move an element inside a rotated, flipped or scaled group: it follows the pointer in screen directions
+- [ ] Close the preview and open the template again: every element is at its file position (nothing was saved)
+
+## Phase 3.2.3-C (movement hardening: stray `pointerup`)
+
+Automated: `node tests/selection.mjs` had 482 checks at the end of this phase (35 new, section "movement hardening (Phase 3.2.3-C)"). A `pointerup` of another pointer (another id, a second finger, a pen) in the middle of a drag leaves the drag open and the element keeps following the real pointer until its own release, which keeps and commits the total once; the same before the drag has started; a click still selects or clears after a stray release; releases without a press change nothing; Escape and `pointercancel` after a stray release still undo the drag and write nothing; a second drag after a committed move accumulates correctly; the same in the real Rendered tab (events dispatched on the slide root, because a real mouse cannot produce a release of another pointer), including that the move is drawn again after a slide change; a code guard on `onUp`. `render.mjs` (673) and `e2e.mjs` (108) are unchanged and pass.
+Mutation check (one-off, not committed): with the old `onUp` (`const d = down; down = null;`) 21 of the 35 new checks fail (the drag freezes and is never kept or committed); with the fix all pass.
+Manual: nothing new (a stray release cannot be produced on demand with real input).
+
+## Phase 3.2.4-A (resize preview: drag the 8 handles, temporary)
+
+Automated: `node tests/selection.mjs` now has 544 checks (62 new: 52 on the slide harness, 6 in the real UI with the mouse, 4 with real touch); `render.mjs` (673) and `e2e.mjs` (108) are unchanged and pass. One existing check changed: the 3.2.3-B test that drags a restored element looked for its press spot from the corner inwards, which is now on a handle, so it searches from the centre outwards.
+- Harness (synthetic pointer events, slide px = pt): every one of the 8 handles of an unrotated element dragged by 37 / 23 pt (size, the opposite handle stays put, drawn element = outline = handles); handles se, nw, s and n of a rotated, flipped, flip + rotated, 180 degree and group-nested elements, with the expected sizes computed by projecting the drag on the element's own axes (dot products), the rotation, the flip inside the drawing and the node's own box unchanged; the exact shape of the stretched `transform`; zoom 50 / 100 / 150 % (same size in points, handles still 8 px, a zoom change after a resize rescales exactly); limits (2 pt minimum, no flip, four-slide-size maximum, a flat line widens but stays flat, a line turned by 90 degrees); cancel by Escape, `pointercancel`, a second finger, a right button, blur and selecting another element (back to the earlier kept size, start / cancel reported), a stray release of another pointer (3.2.3-C rule), a release far from the press without a move event, a click on a handle without travel; preview only (Scene Model worlds, every part of the deck zip and the edit-state size and version unchanged, `reset()` / `dispose()` leave the slide DOM byte-identical, a redraw shows the file frames); a move after a resize and a resize after a move (the edit-state record holds the move only); hit-testing of a stretched line; the resize cursor (and its turn with the rotation); handles and outline still `pointer-events: none` and the rotation knob still inert; code guards.
+- Real UI, mouse: cursor on the handle, the element grows with the pointer while the button is down, kept after the release, anchored, outline equal, status line, a body drag still moves, another slide and back drops the resize and keeps the committed move.
+- Real UI, touch (phone width): a finger on a handle resizes and the page does not scroll, also from 8 px outside the handle (off the element), and a finger far from every handle resizes nothing.
+- Mutation check (one-off, not committed): ignoring the rotation fails 6 checks, not shifting the centre (no anchor) 18, committing the resize to the edit-state 3.
+Manual, on your own machine:
+- [ ] Select an element on your own decks and drag each of the 8 handles: the dragged edge follows the pointer, the opposite edge stays, rotated / flipped / grouped elements resize along their own axes
+- [ ] The cursor over a handle is the matching resize cursor and turns with a rotated element; away from the handles it is the move cursor on the element
+- [ ] Zoom the page and resize the window after a resize: the element stays where the preview put it
+- [ ] Press Escape in the middle of a resize: the element goes back to its size from before that drag
+- [ ] Resize, switch slide and return: the slide shows the file size again (a resize is not kept); move, switch and return: the move is still there
+- [ ] On a phone or a touch screen: a finger on a handle (also on its outer half) resizes and does not scroll the page
