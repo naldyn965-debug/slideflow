@@ -59,7 +59,7 @@ export function fontsUsed(scene) {
   const seen = new Map();
   const add = (r) => { if (r.br || !r.text) return; const k = `${r.font}|${!!r.b}|${!!r.i}|${!!r.rtl}`; if (!seen.has(k)) seen.set(k, { font: r.font, b: !!r.b, i: !!r.i, rtl: !!r.rtl }); };
   for (const e of scene.all) {
-    for (const p of e.text?.paras || []) p.runs.forEach(add);
+    for (const p of e.text?.paras || []) { p.runs.forEach(add); if (p.defRun) add({ ...p.defRun, text: 'x' }); } // (the default run of an empty paragraph: its font is needed once text is typed into it)
     for (const row of e.table?.rows || []) for (const c of row.cells) for (const p of c.text) p.runs.forEach(add);
   }
   return [...seen.values()];

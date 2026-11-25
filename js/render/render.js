@@ -184,10 +184,10 @@ function paragraphEl(p, k) {
     if (r.highlight) c.backgroundColor = `#${r.highlight}`;
     d.append(s);
   }
-  if (!p.runs.some((r) => !r.br && r.text) && !p.runs.some((r) => r.br)) { const z = el('span', 'sf-r'); z.textContent = '​'; z.style.fontSize = `calc(var(--u) * ${f(size)}${fit})`; d.append(z); }
+  if (!p.runs.some((r) => !r.br && r.text) && !p.runs.some((r) => r.br)) { const z = el('span', 'sf-r', { 'data-ph': '1' }); z.textContent = '​'; z.style.fontSize = `calc(var(--u) * ${f(size)}${fit})`; d.append(z); }
   return d;
 }
-function textBox(text, k) {
+function textBox(text, k, edited = false) {
   const t = text.body; const box = el('div', 'sf-text');
   const s = box.style;
   s.paddingLeft = L(t.insets.l / E); s.paddingRight = L(t.insets.r / E); s.paddingTop = L(t.insets.t / E); s.paddingBottom = L(t.insets.b / E);
@@ -200,6 +200,7 @@ function textBox(text, k) {
   for (const p of text.paras) inner.append(paragraphEl(p, k));
   box.append(inner);
   if (t.autofit === 'shrink' && t.fontScale === 1) box.dataset.autofit = 'shrink';
+  else if (edited && t.autofit === 'shrink') { box.dataset.autofit = 'shrink'; box.dataset.fitBase = String(t.fontScale); } // (Phase 3.2.5-C) an EDITED shape with a stored fontScale: the sizes are drawn at the file's scale, so fitText() starts from the scale 1 (full size) and shrinks again from there (text that grew shrinks, text that got shorter grows back); an untouched shape keeps the file's scale
   return box;
 }
 
@@ -283,8 +284,19 @@ function paintBackground(ctx, root, bg) {
   return null;
 }
 
+const FIT_NOTE = 'text overflows its frame and the frame is set to "shrink on overflow"';
+const FIT_FROM = new WeakMap(); // scene element -> its support level before the fit note was written
+const LEVELS = { native: 0, approximated: 1, opaque: 2 };
+/** Take the note of an earlier fit off a scene element (Phase 3.2.5-C): the text it described may be gone. Its support level goes back to what the other notes (or the level before the fit note) say. Returns true when there was one. */
+function clearFitNote(e) {
+  if (!e.reasons.some((r) => r.text.startsWith(FIT_NOTE))) return false;
+  e.reasons = e.reasons.filter((r) => !r.text.startsWith(FIT_NOTE));
+  e.support = e.reasons.reduce((a, r) => (LEVELS[r.level] > LEVELS[a] ? r.level : a), FIT_FROM.get(e) || 'native');
+  return true;
+}
+
 /**
- * Render one scene into `host`. Returns { root, nodes, report, setWidth(px), fitText(), dispose() }.
+ * Render one scene into `host`. Returns { root, nodes, report, setWidth(px), fitText(), setText(id, text, refit), dispose() }.
  * `host` must be in the document (text is measured for "shrink on overflow"). The scene is resolved first when it has not been.
  */
 export async function renderSlide(scene, host, opts = {}) {
@@ -312,14 +324,30 @@ export async function renderSlide(scene, host, opts = {}) {
     fitText() {
       for (const box of root.querySelectorAll('.sf-text[data-autofit="shrink"]')) {
         const owner = box.parentElement; const e = scene.byId.get(owner.dataset.id); const inner = box.firstElementChild;
-        box.style.removeProperty('--fit'); let fit = 1;
+        const base = Number(box.dataset.fitBase) || 1; // (3.2.5-C) the stored fontScale of an edited shape: --fit = scale / base, so scale 1 draws the sizes the file had before PowerPoint shrank them
+        const mult = (sc) => String(Math.round((sc / base) * 1000) / 1000);
+        const cleared = e ? clearFitNote(e) : false; // (3.2.5-C) the note of an earlier fit is dropped first: it is written again below only when the text still overflows
+        if (base !== 1) box.style.setProperty('--fit', mult(1)); else box.style.removeProperty('--fit');
+        let fit = 1;
         const over = () => inner.scrollHeight - 1 > box.clientHeight - parseFloat(getComputedStyle(box).paddingTop) - parseFloat(getComputedStyle(box).paddingBottom) + 0.5;
         if (box.clientHeight > 0 && over()) {
-          while (fit > 0.3 && over()) { fit = Math.round((fit - 0.05) * 100) / 100; box.style.setProperty('--fit', String(fit)); }
-          if (e) note(e, 'approximated', `text overflows its frame and the frame is set to "shrink on overflow": the text is scaled to ${Math.round(fit * 100)}% here, PowerPoint re-fits it when the file is opened`);
+          while (fit > 0.3 && over()) { fit = Math.round((fit - 0.05) * 100) / 100; box.style.setProperty('--fit', mult(fit)); }
+          if (e) { FIT_FROM.set(e, e.support); note(e, 'approximated', `${FIT_NOTE}: the text is scaled to ${Math.round(fit * 100)}% here, PowerPoint re-fits it when the file is opened`); }
           owner.dataset.support = e?.support || owner.dataset.support;
-        }
+        } else if (cleared) owner.dataset.support = e.support;
       }
+    },
+    /**
+     * Draw `text` (a resolved text, e.g. the committed text edit applied by the edit-state, or the scene's own) in the element `id` in place of the text box it has now (Phase 3.2.5-B). The same builder as the
+     * first drawing is used and the new box takes the old one's rectangle; the scene is not touched. `refit` = false when the caller fits afterwards (several elements); `edited` = the text carries a committed text edit (a shape with a stored fontScale is then fitted again from full size, see textBox). Returns false when there is nothing to replace.
+     */
+    setText(id, text, refit = true, edited = false) {
+      const owner = ctx.nodes.get(id); const old = owner && owner.querySelector(':scope > .sf-text'); if (!old || !text || !text.paras || !text.paras.some((p) => p.runs.length)) return false;
+      const tb = textBox(text, ctx.k, edited);
+      for (const side of ['left', 'top', 'width', 'height']) if (old.style[side]) tb.style[side] = old.style[side];
+      old.replaceWith(tb);
+      const e = scene.byId.get(id); if (e && clearFitNote(e)) owner.dataset.support = e.support; // (3.2.5-C) the old text's fit note goes with it; fitText() writes a new one if the new text needs it
+      if (refit) handle.fitText(); return true;
     },
     dispose() { for (const p of ctx.urls.values()) p.then((u) => u && URL.revokeObjectURL(u)); ctx.urls.clear(); },
   };

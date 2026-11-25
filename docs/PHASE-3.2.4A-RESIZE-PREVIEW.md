@@ -1,5 +1,7 @@
 # Phase 3.2.4-A: drag the 8 resize handles (temporary resize preview)
 
+> **Update (Phase 3.2.4-B):** a completed resize is now committed to the in-memory edit-state and drawn again on redraws, slide and tab switches; see PHASE-3.2.4B-RESIZE-COMMIT.md. Statements below that a resize is "not committed" or "not drawn again" describe 3.2.4-A and apply only to a controller attached without an `edits` option.
+
 Press a resize handle of the **selected** element and drag: the element is stretched to follow the pointer. Like the move of 3.2.3-A it is a **temporary preview** and nothing else: no Scene Model change, no PPTX / XML edit, **no edit-state commit**, nothing saved or exported. No rotation, no aspect lock, no keyboard resize.
 
 ## Behaviour

@@ -243,6 +243,26 @@ function splitScripts(text) {
 
 function pickLayers(layers, f) { for (const l of layers) { const v = l && f(l); if (v != null) return v; } return null; }
 
+/**
+ * One resolved run from an rPr-like element (a:rPr of a run, or a:endParaRPr for the default run of an empty paragraph) and the paragraph's inheritance chain.
+ * `c` = { lvl, chain, env, fontScale, fontCol, shapeLayers, cellStyle, scene }. Returns { run, approx }.
+ */
+function buildRun(rPr, text, segRtl, c) {
+  const { lvl, chain, env, fontScale, fontCol, shapeLayers, cellStyle, scene } = c;
+  const rl = [rPr, ...chain.map((cc) => kid(kids(cc, `lvl${lvl}pPr`)[0], 'defRPr'))];
+  const ra = (a) => pickLayers(rl, (l) => (l.hasAttribute(a) ? l.getAttribute(a) : null));
+  const link = !!(rPr && kid(rPr, 'hlinkClick'));
+  const hl = rPr && kid(rPr, 'highlight') ? firstColor(kid(rPr, 'highlight'), scene.cx, null) : null;
+    const st = runStyle(rPr, lvl, chain, env, segRtl, fontScale, fontCol, shapeLayers);
+    const u = ra('u'); const strike = ra('strike'); const base = Number(ra('baseline')) || 0; const cap = ra('cap'); const spc = Number(ra('spc')) || 0;
+    let hex = st.hex; let alphaV = st.alpha;
+    if (cellStyle?.color && !(rPr && kid(rPr, 'solidFill')) && !(rl[1] && kid(rl[1], 'solidFill'))) { // table-style text colour wins over the deck default, never over the cell's own colour
+      hex = cellStyle.color.hex; alphaV = cellStyle.color.alpha; }
+    if (link) { const h = scene.cx.theme.colors.hlink; if (h) hex = h; }
+    const run = { text, rtl: segRtl, sz: st.sz, b: cellStyle?.b && !rPr?.hasAttribute('b') && !st.b ? true : st.b, i: st.i, font: st.font, hex, alpha: alphaV, u: !!u && u !== 'none' || link, strike: !!strike && strike !== 'noStrike', baseline: base, caps: cap === 'all' ? 'all' : cap === 'small' ? 'small' : null, spc: spc / 100, highlight: hl?.hex || null, link };
+  return { run, approx: st.approx };
+}
+
 /** Resolve one <a:txBody>-like container (p:txBody on shapes, a:txBody in table cells). `phLayers`: layout/master placeholder txBodies for inheritance. */
 function resolveText(e, scene, body, opts) {
   const { ph, phBodies = [], defaultAnchor = 't', cellStyle = null } = opts;
@@ -310,31 +330,26 @@ function resolveText(e, scene, body, opts) {
     if (!para.bullet) counters.length = Math.min(counters.length, lvl0); // a non-numbered paragraph at this level restarts deeper counters
     if (!para.bullet || para.bullet.type !== 'auto') { if (counters.length > lvl0) counters.length = lvl0; }
 
+    const rc = { lvl, chain, env, fontScale, fontCol, shapeLayers, cellStyle, scene }; let ci = -1; let endCi = -1;
     for (const n of p.children) {
-      const ln = n.localName;
+      ci++; const ln = n.localName;
       if (ln === 'br') { para.runs.push({ br: true }); continue; }
-      if (ln === 'endParaRPr') { para.endSz = Number(n.getAttribute('sz')) ? Number(n.getAttribute('sz')) / 100 : null; continue; }
+      if (ln === 'endParaRPr') { endCi = ci; para.endSz = Number(n.getAttribute('sz')) ? Number(n.getAttribute('sz')) / 100 : null; continue; }
       if (ln !== 'r' && ln !== 'fld') continue;
       const text = kid(n, 't')?.textContent ?? '';
       if (!text) continue;
       const rPr = kid(n, 'rPr');
-      const rl = [rPr, ...chain.map((c) => kid(kids(c, `lvl${lvl}pPr`)[0], 'defRPr'))];
-      const ra = (a) => pickLayers(rl, (l) => (l.hasAttribute(a) ? l.getAttribute(a) : null));
-      const link = !!(rPr && kid(rPr, 'hlinkClick'));
-      const hl = rPr && kid(rPr, 'highlight') ? firstColor(kid(rPr, 'highlight'), scene.cx, null) : null;
+      let si = 0;
       for (const seg of splitScripts(text)) {
-        const st = runStyle(rPr, lvl, chain, env, seg.rtl, fontScale, fontCol, shapeLayers);
-        const u = ra('u'); const strike = ra('strike'); const base = Number(ra('baseline')) || 0; const cap = ra('cap'); const spc = Number(ra('spc')) || 0;
-        let hex = st.hex; let alphaV = st.alpha;
-        if (cellStyle?.color && !(rPr && kid(rPr, 'solidFill')) && !(rl[1] && kid(rl[1], 'solidFill'))) { // table-style text colour wins over the deck default, never over the cell's own colour
-          hex = cellStyle.color.hex; alphaV = cellStyle.color.alpha; }
-        if (link) { const h = scene.cx.theme.colors.hlink; if (h) hex = h; }
-        const run = { text: seg.text, rtl: seg.rtl, sz: st.sz, b: cellStyle?.b && !rPr?.hasAttribute('b') && !st.b ? true : st.b, i: st.i, font: st.font, hex, alpha: alphaV, u: !!u && u !== 'none' || link, strike: !!strike && strike !== 'noStrike', baseline: base, caps: cap === 'all' ? 'all' : cap === 'small' ? 'small' : null, spc: spc / 100, highlight: hl?.hex || null, link };
-        if (st.approx) note(e, 'approximated', `text colour transform ${st.approx.join(', ')} is not applied`);
+        const { run, approx } = buildRun(rPr, seg.text, seg.rtl, rc);
+        run.src = { ci, s: si++ }; // where this run comes from in the paragraph: the child index of its <a:r> / <a:fld> and the script segment of its text (for writing text back later; nothing reads it yet)
+        if (approx) note(e, 'approximated', `text colour transform ${approx.join(', ')} is not applied`);
         para.runs.push(run);
       }
       if (rPr && (kid(rPr, 'effectLst') || kid(rPr, 'gradFill') || kid(rPr, 'ln') || kid(rPr, 'blipFill') || kid(rPr, 'pattFill'))) note(e, 'approximated', 'text effect (outline, gradient or shadow on the letters) is drawn as plain text');
     }
+    // A paragraph with no text run (an empty paragraph): the run text typed into it would get, with the formatting its <a:endParaRPr> and the inheritance chain give (Phase 3.2.5-B; the renderer does not use it)
+    if (!para.runs.some((r) => !r.br)) { const { run } = buildRun(kid(p, 'endParaRPr'), '', rtl, rc); run.src = { ci: endCi, s: 0, def: true }; para.defRun = run; }
     paras.push(para);
   }
   return { body: bodyOut, paras };

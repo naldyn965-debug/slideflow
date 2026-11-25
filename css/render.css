@@ -28,6 +28,9 @@
 .sf-sel-h { position: absolute; inset: -2px; pointer-events: none; --sf-hs: 8px; --sf-rd: 24px; }
 @media (pointer: coarse) { .sf-sel-h { --sf-hs: 10px; --sf-rd: 28px; } }
 .sf-hdl, .sf-rot { position: absolute; box-sizing: border-box; width: var(--sf-hs); height: var(--sf-hs); transform: translate(-50%, -50%); pointer-events: none; cursor: auto; background: #fff; border: 1.5px solid var(--accent, #2c3dd0); border-radius: 2px; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28); }
+/* text edit mode (Phase 3.2.5-A, preview only): the selected shape's text is editable in place; its outline stays but the handles go (nothing can be dragged or resized meanwhile) */
+.sf-sel.sf-editing .sf-sel-h { display: none; }
+.sf-text-in.sf-text-editing { outline: none; cursor: text; -webkit-user-select: text; user-select: text; }
 /* rotation handle (Phase 3.2.2-B, visual only): same look as the resize handles, round, centred --sf-rd screen px above the frame's top edge in the element's own (rotated) frame, joined to it by a 1 px stem */
 .sf-rot { left: 50%; top: calc(-1 * var(--sf-rd)); border-radius: 50%; }
 .sf-rot::before { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: calc(var(--sf-rd) - var(--sf-hs) / 2); transform: translateX(-50%); background: var(--accent, #2c3dd0); }

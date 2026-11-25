@@ -16,7 +16,7 @@ const KIND = { shape: 'Shape', image: 'Picture', line: 'Line', group: 'Group', t
 /** Returns { el, goto(i), show(), hide(), dispose() }. `onPick(i)` asks the host to change the selected slide. */
 export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
   const scenes = new Map();
-  const edits = editStateOf(parsed); // Phase 3.2.3-B: completed moves, kept in memory for as long as this deck is open (temporary: nothing is written to the file or saved)
+  const edits = editStateOf(parsed); // Phase 3.2.3-B / 3.2.4-B: completed moves and completed resizes, kept in memory for as long as this deck is open (temporary: nothing is written to the file or saved)
   let handle = null; let token = 0; let visible = false; let index = -1; let ro = null;
   let sel = null; let picked = null; // Phase 3.2.1: the selection controller of the drawn slide, and { slide, id } of the selected element (kept when the same slide is drawn again, dropped on any other slide)
 
@@ -82,22 +82,31 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
       handle = await renderSlide(scene, holder);
       if (my !== token) { handle.dispose(); return; }
       handle.root.setAttribute('role', 'group'); handle.root.setAttribute('aria-label', `Slide ${i + 1}, rendered from the file (read-only)`);
-      const fit = () => handle.setWidth(frame.clientWidth);
+      // The count line and the details of the slide, from the scene as it is NOW: text fitting adds notes (and, since 3.2.5-C, takes them off again), so this runs after the first drawing and after every committed text edit.
+      const refresh = () => {
+        handle.fitText();
+        const rep = handle.report();
+        note.textContent = `${plural(rep.counts.native + rep.counts.approximated + rep.counts.opaque, 'element')} drawn from the file: ${rep.counts.native} native, ${rep.counts.approximated} approximated, ${rep.counts.opaque} not drawn.`;
+        details.replaceChildren(...describe(rep, rep.fonts, scene));
+      };
+      let pendingFit = false; // a resize of the frame while text is being edited is applied when the mode ends (re-fitting text under the caret would make it jump)
+      const fit = () => { if (sel && sel.editing != null) { pendingFit = true; return; } handle.setWidth(frame.clientWidth); };
       fit();
       if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(() => fit()); ro.observe(frame); }
       sel = attachSelection(handle, scene, {
         onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null, id && sel ? sel.size(id) : null); },
         onMove: (m) => { if (m.phase !== 'start') say(scene, m.id, m, sel ? sel.size(m.id) : null); }, // a completed move is committed to the temporary edit-state, which draws it again on every redraw of this slide
-        onResize: (r) => { if (r.phase !== 'start') say(scene, r.id, sel ? sel.offset(r.id) : null, r); }, // a resize is a preview only: it is not committed anywhere and goes with this slide's controller
+        onResize: (r) => { if (r.phase !== 'start') say(scene, r.id, sel ? sel.offset(r.id) : null, r); }, // a completed resize is committed to the temporary edit-state (3.2.4-B), which draws it again on every redraw of this slide
+        onEdit: (m) => { // Phase 3.2.5-A / B: text edit mode (a draft kept in the temporary edit-state on every exit but Escape; nothing is saved)
+          const now = () => say(scene, sel ? sel.id : null, sel && sel.id ? sel.offset(sel.id) : null, sel && sel.id ? sel.size(sel.id) : null);
+          if (m.phase === 'start') selNote.textContent = `Editing the text of ${KIND[scene.byId.get(m.id)?.kind] || 'the element'}${scene.byId.get(m.id)?.name ? ` “${scene.byId.get(m.id).name}”` : ''} in the preview. Esc cancels; a click outside keeps the change in memory (nothing is saved).${m.locked ? ` ${m.locked === 1 ? 'A paragraph that holds only a line break cannot' : 'Paragraphs that hold only line breaks cannot'} be typed into yet.` : ''}`;
+          else if (m.phase === 'refused') { now(); selNote.textContent += `. ${m.message}`; }
+          else { now(); if (m.committed && m.changed) selNote.textContent += '. Text changed in the preview (kept while this deck is open; nothing is saved).'; if (m.skipped) selNote.textContent += ' Some typed text had no place to go and was not kept.'; if (pendingFit) { pendingFit = false; fit(); } if (m.committed && m.changed) refresh(); }
+        },
         edits,
       });
       if (!(picked && sel.select(picked.id))) { picked = null; say(scene, null); } // drawn again (tab shown again): the same element stays selected
-      const rep = handle.report();
-      handle.fitText();
-      const rep2 = handle.report(); // text fitting may add notes
-      note.textContent = `${plural(rep2.counts.native + rep2.counts.approximated + rep2.counts.opaque, 'element')} drawn from the file: ${rep2.counts.native} native, ${rep2.counts.approximated} approximated, ${rep2.counts.opaque} not drawn.`;
-      details.replaceChildren(...describe(rep2, rep2.fonts, scene));
-      void rep;
+      refresh();
     } catch (e) {
       console.error(e);
       if (my !== token) return;
@@ -112,7 +121,7 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
     /** The host selected slide i. Draws it when the tab is visible, otherwise on the next show(). */
     goto(i) { index = i; mark(i); if (visible) draw(i); },
     show() { visible = true; el.hidden = false; if (index < 0) index = current(); mark(index); draw(index); },
-    hide() { visible = false; token++; },
+    hide() { sel?.endEdit('hide'); visible = false; token++; },
     dispose() { token++; ro?.disconnect(); sel?.dispose(); sel = null; handle?.dispose(); handle = null; scenes.clear(); edits.clear(); },
   };
 }
