@@ -6,6 +6,7 @@
 import { kid, kids, mediaUrl } from '../pptx/parser.js';
 import { note, phSources } from '../model/scene.js';
 import { resolveScene } from '../model/resolve.js';
+import { effectiveText, effectiveStyle } from '../model/edit-state.js'; // (Phase 3.2.6-B) the pure functions that apply a style record: the renderer never decides what a record means
 import { presetGeometry, customGeometry } from './geometry.js';
 import { fontStack, loadStyles, loadFontsFor, fontReport } from './fonts.js';
 
@@ -108,14 +109,12 @@ async function paintImage(ctx, e, svg, defs, fill, g, w, h) {
 }
 
 // ---------- shapes ----------
-async function renderShape(ctx, e, box) {
-  const { scene } = ctx; const w = e.world.w / E; const h = e.world.h / E;
-  const g = geometryOf(scene, e, w, h);
+/** The SVG of a shape for a given style `st` ({ fill, line, shadow, glow }: the file's own `e.style`, or one the edit-state made, see setStyle). One builder for the first drawing and for a restyle. */
+async function buildShapeSvg(ctx, e, g, w, h, st) {
   const sw = Math.max(w, 1); const sh = Math.max(h, 1);
   const svg = sv('svg', { class: 'sf-geo', viewBox: `0 0 ${f(sw)} ${f(sh)}`, preserveAspectRatio: 'none' });
   svg.style.width = L(sw); svg.style.height = L(sh);
   const defs = sv('defs'); svg.append(defs);
-  const st = e.style || { fill: { type: 'none' }, line: { type: 'none' }, shadow: null };
   const fill = st.fill;
   if (fill.type === 'image') await paintImage(ctx, e, svg, defs, fill, g, w, h);
   for (const p of g.paths) {
@@ -133,6 +132,13 @@ async function renderShape(ctx, e, box) {
   if (st.shadow) { const s = st.shadow; fx.push(`drop-shadow(${L(s.dx / E)} ${L(s.dy / E)} ${L(s.blur / E / 2)} ${rgba(s.hex, s.alpha)})`); }
   if (st.glow) { const g = st.glow; fx.push(`drop-shadow(0 0 ${L(g.rad / E / 2)} ${rgba(g.hex, g.alpha)})`, `drop-shadow(0 0 ${L(g.rad / E / 4)} ${rgba(g.hex, g.alpha)})`); }
   if (fx.length) svg.style.filter = fx.join(' ');
+  return svg;
+}
+async function renderShape(ctx, e, box) {
+  const { scene } = ctx; const w = e.world.w / E; const h = e.world.h / E;
+  const g = geometryOf(scene, e, w, h);
+  const svg = await buildShapeSvg(ctx, e, g, w, h, e.style || { fill: { type: 'none' }, line: { type: 'none' }, shadow: null });
+  ctx.geo.set(e.id, { g, w, h }); // what a restyle needs: the geometry is looked up (and its notes written) once, at the first drawing
   box.append(svg);
   return g;
 }
@@ -296,14 +302,14 @@ function clearFitNote(e) {
 }
 
 /**
- * Render one scene into `host`. Returns { root, nodes, report, setWidth(px), fitText(), setText(id, text, refit), dispose() }.
+ * Render one scene into `host`. Returns { root, nodes, report, setWidth(px), fitText(), setText(id, text, refit, edited), setStyle(id, record), dispose() }. `opts.styles` (an array or a Map of style records) is applied after the first drawing.
  * `host` must be in the document (text is measured for "shrink on overflow"). The scene is resolved first when it has not been.
  */
 export async function renderSlide(scene, host, opts = {}) {
   await resolveScene(scene);
   await loadStyles();
   await loadFontsFor(scene);
-  const ctx = { scene, zip: scene.parsed.zip, urls: new Map(), nodes: new Map(), k: { fit: true } };
+  const ctx = { scene, zip: scene.parsed.zip, urls: new Map(), nodes: new Map(), k: { fit: true }, geo: new Map(), styles: new Map(), raw: new Map(), edited: new Map(), svg0: new Map(), tok: new Map() };
   const root = el('div', 'sf-slide'); root.dataset.slide = String(scene.index);
   const wpt = scene.width / E; const hpt = scene.height / E;
   root.style.width = L(wpt); root.style.height = L(hpt);
@@ -318,6 +324,16 @@ export async function renderSlide(scene, host, opts = {}) {
     layers[e.origin] = (layers[e.origin] || 0) + 1;
   }
   host.replaceChildren(root);
+  /** Replace the text box of `id` by one drawn from `text` (with the element's style record applied on top), keeping the old box's rectangle. false when there is nothing to draw it in. */
+  const drawText = (id, text, edited) => {
+    const owner = ctx.nodes.get(id); const old = owner && owner.querySelector(':scope > .sf-text'); if (!old || !text || !text.paras || !text.paras.some((p) => p.runs.length)) return false;
+    const rec = ctx.styles.get(id); const styled = rec && rec.text ? effectiveText({ text }, null, rec) : text;
+    const tb = textBox(styled, ctx.k, edited || !!(rec && rec.text));
+    for (const side of ['left', 'top', 'width', 'height']) if (old.style[side]) tb.style[side] = old.style[side];
+    old.replaceWith(tb);
+    const e = scene.byId.get(id); if (e && clearFitNote(e)) owner.dataset.support = e.support; // (3.2.5-C) the old text's fit note goes with it; fitText() writes a new one if the new text needs it
+    return true;
+  };
   const handle = {
     root, nodes: ctx.nodes,
     setWidth(px) { if (px > 0) { root.style.setProperty('--u', `${f(px / wpt)}px`); handle.fitText(); } },
@@ -342,17 +358,54 @@ export async function renderSlide(scene, host, opts = {}) {
      * first drawing is used and the new box takes the old one's rectangle; the scene is not touched. `refit` = false when the caller fits afterwards (several elements); `edited` = the text carries a committed text edit (a shape with a stored fontScale is then fitted again from full size, see textBox). Returns false when there is nothing to replace.
      */
     setText(id, text, refit = true, edited = false) {
-      const owner = ctx.nodes.get(id); const old = owner && owner.querySelector(':scope > .sf-text'); if (!old || !text || !text.paras || !text.paras.some((p) => p.runs.length)) return false;
-      const tb = textBox(text, ctx.k, edited);
-      for (const side of ['left', 'top', 'width', 'height']) if (old.style[side]) tb.style[side] = old.style[side];
-      old.replaceWith(tb);
-      const e = scene.byId.get(id); if (e && clearFitNote(e)) owner.dataset.support = e.support; // (3.2.5-C) the old text's fit note goes with it; fitText() writes a new one if the new text needs it
+      if (!drawText(id, text, edited)) return false;
+      ctx.raw.set(id, text); ctx.edited.set(id, edited); // the text as the caller gave it (a style record is applied ON TOP of it, see drawText)
+      const rec = ctx.styles.get(id);
+      if (rec && rec.text) loadFontsFor({ all: [{ text: effectiveText({ text }, null, rec) }] }).then(() => { if (ctx.raw.get(id) === text) handle.fitText(); }, () => {}); // (3.2.6-B) a face the style needs may still be on its way: fit again when it is there
       if (refit) handle.fitText(); return true;
+    },
+    /**
+     * Apply a style record (Phase 3.2.6-A: { text?, fill?, line? }, as `createEditState().getStyle(id)` gives it) to the element `id`, or take it off again with `null` (Phase 3.2.6-B). The renderer only draws:
+     * what the record means is decided by the edit-state's own `effectiveStyle` / `effectiveText`. The scene is not touched.
+     *   - fill / line: the shape's SVG is built again by the builder of the first drawing, from the effective style; the file's own SVG node is kept and put back by `null`, so a reset is exact.
+     *   - text: the text box is drawn again from the text last given to `setText` (or the file's) with the text style applied; a style stays on while later `setText` calls (a committed text edit) redraw the text.
+     *     An element with a text style is drawn as an EDITED shape (see textBox): sizes are the nominal ones and a shrink-autofit shape with a stored fontScale is fitted from full size.
+     *   - fonts: the faces the styled text needs (bold, italic, a new family) are loaded BEFORE the text is measured.
+     * Async. Resolves to true when something was drawn, false for an element this cannot style (no such element, not a shape or text) or when a newer call for the same element took over. Never throws.
+     */
+    async setStyle(id, rec) {
+      try {
+        const owner = ctx.nodes.get(id); const e = scene.byId.get(id); if (!owner || !e) return false;
+        if (!((e.kind === 'shape' && e.tag === 'sp') || (e.kind === 'line' && e.tag === 'cxnSp'))) return false; // the elements 3.2.6-A calls styleable: a picture, table or group is never restyled, whatever the record says
+        const tok = (ctx.tok.get(id) || 0) + 1; ctx.tok.set(id, tok);
+        const prev = ctx.styles.get(id); const has = !!(rec && (rec.text || rec.fill || rec.line));
+        const cur = has ? JSON.parse(JSON.stringify(rec)) : null;
+        let drew = false;
+        const geo = ctx.geo.get(id); const now = owner.querySelector(':scope > svg.sf-geo');
+        if (geo && now) {
+          if (cur && (cur.fill || cur.line)) {
+            const svg = await buildShapeSvg(ctx, e, geo.g, geo.w, geo.h, effectiveStyle(e, cur));
+            if (ctx.tok.get(id) !== tok) return false;
+            const at = owner.querySelector(':scope > svg.sf-geo'); if (!ctx.svg0.has(id)) ctx.svg0.set(id, at);
+            at.replaceWith(svg); drew = true;
+          } else if (ctx.svg0.has(id)) { now.replaceWith(ctx.svg0.get(id)); ctx.svg0.delete(id); drew = true; }
+        }
+        const raw = ctx.raw.get(id) || e.text;
+        if (owner.querySelector(':scope > .sf-text') && raw && ((prev && prev.text) || (cur && cur.text))) {
+          const styled = cur && cur.text ? effectiveText({ text: raw }, null, cur) : raw;
+          if (cur && cur.text) { await loadFontsFor({ all: [{ text: styled }] }); if (ctx.tok.get(id) !== tok) return false; }
+          if (cur) ctx.styles.set(id, cur); else ctx.styles.delete(id);
+          if (drawText(id, ctx.raw.get(id) || e.text, !!(cur && cur.text) || !!ctx.edited.get(id))) drew = true; // (3.2.6-C) the text as it is NOW: a setText that came in while the faces were loading must not be overwritten by the text this call started with; drawText applies the record just stored
+        } else if (cur) ctx.styles.set(id, cur); else ctx.styles.delete(id);
+        handle.fitText();
+        return drew;
+      } catch { return false; }
     },
     dispose() { for (const p of ctx.urls.values()) p.then((u) => u && URL.revokeObjectURL(u)); ctx.urls.clear(); },
   };
   handle.report = () => ({ ...renderReport(scene, bgSupport, layers), fonts: fontReport(scene) });
   if (opts.width) handle.setWidth(opts.width);
+  if (opts.styles) for (const r of opts.styles instanceof Map ? opts.styles.values() : opts.styles) await handle.setStyle(r.id, r); // (3.2.6-B) records to draw from the start (the same path as setStyle)
   return handle;
 }
 

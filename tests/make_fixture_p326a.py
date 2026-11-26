@@ -10,6 +10,8 @@ Shapes (by name):
   conn     straight connector, outline AA00AA 1.5 pt
   pic      picture (not styleable)
   tbl      table (not styleable)
+  rtl      text box with one right-to-left Arabic paragraph (colour 334455)
+  fx       rectangle flipped horizontally with an outer shadow, solid fill 3366CC, solid outline 000000, one run
   grp      group holding the rectangle grpchild (the group is not styleable, the child is)
 """
 import io, os, struct, zlib
@@ -59,6 +61,16 @@ for c in list(bp): bp.remove(c)
 n = etree.SubElement(bp, A + 'normAutofit'); n.set('fontScale', '62500'); n.set('lnSpcReduction', '20000')
 run(tf.paragraphs[0], 'Stored fontScale.', 32, '222222')
 t = box('emptyp', 500, 150, 280, 60); p = t.text_frame.paragraphs[0]; p._p.get_or_add_endParaRPr().set('sz', '2800')
+sh = rect('fx', 820, 20, 120, 70); sh.fill.solid(); sh.fill.fore_color.rgb = RGBColor.from_string('3366CC'); sh.line.color.rgb = RGBColor.from_string('000000'); sh.line.width = Pt(1)
+sp = sh._element.spPr; sp.find(A + 'xfrm').set('flipH', '1')
+eff = sp.find(A + 'effectLst')
+if eff is None: eff = etree.SubElement(sp, A + 'effectLst')
+sd = etree.SubElement(eff, A + 'outerShdw'); sd.set('blurRad', '50800'); sd.set('dist', '38100'); sd.set('dir', '2700000'); sd.set('algn', 'tl'); sd.set('rotWithShape', '0')
+c0 = etree.SubElement(sd, A + 'srgbClr'); c0.set('val', '000000'); etree.SubElement(c0, A + 'alpha').set('val', '40000')
+run(sh.text_frame.paragraphs[0], 'Flip', 16, 'FFFFFF')
+t = box('rtl', 500, 410, 300, 50); p = t.text_frame.paragraphs[0]
+pPr = p._p.get_or_add_pPr(); pPr.set('rtl', '1'); pPr.set('algn', 'r')
+r = run(p, 'مرحبا بالعالم', 24, '334455'); r._r.get_or_add_rPr().set('lang', 'ar-SA')
 c = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Emu(500 * PT), Emu(240 * PT), Emu(800 * PT), Emu(300 * PT)); c.name = 'conn'
 c.line.color.rgb = RGBColor.from_string('AA00AA'); c.line.width = Pt(1.5)
 def png(w=4, h=4):

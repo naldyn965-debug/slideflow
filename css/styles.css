@@ -214,3 +214,28 @@ progress { width: 100%; height: 6px; accent-color: var(--ink); }
 .bar-track i { display: block; height: 100%; background: var(--ink); }
 .film-item .tag { margin: 0 0 0 auto; flex: none; }
 @media (max-width: 860px) { .modes { grid-template-columns: 1fr; } .design { max-height: none; } }
+
+/* Phase 3.2.6-D: style bar of the Rendered tab (js/ui/style-bar.js). Static rules only: the CSP forbids inline styles. */
+.sf-sb { display: grid; gap: 6px; }
+.sf-style-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--r-ctl); background: var(--canvas); }
+.sf-sb-g { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; }
+.sf-sb-f { display: grid; gap: 3px; font-size: 12px; color: var(--ink-2); }
+.sf-sb-f > span:first-child { font-weight: 500; }
+.sf-sb-color { width: 38px; height: 32px; padding: 2px; border: 1px solid var(--rule-strong); border-radius: var(--r-ctl); background: var(--surface); cursor: pointer; }
+.sf-sb-color[data-mixed] { border-style: dashed; }
+.sf-sb-num, .sf-sb-font { height: 32px; padding: 0 8px; border: 1px solid var(--rule-strong); border-radius: var(--r-ctl); background: var(--surface); color: var(--ink); }
+.sf-sb-num { width: 74px; }
+.sf-sb-font { width: 150px; }
+.sf-sb-num:focus, .sf-sb-font:focus { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 25%, transparent); outline-offset: 0; }
+.sf-sb-unit { display: none; }
+.sf-sb-tgl { width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-strong); border-radius: var(--r-ctl); background: var(--surface); cursor: pointer; font: 600 14px var(--sans); }
+.sf-sb-tgl.sf-sb-i { font-style: italic; font-family: var(--serif); }
+.sf-sb-tgl:hover:not(:disabled) { background: var(--canvas); }
+.sf-sb-tgl[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.sf-sb-tgl[aria-pressed="mixed"] { border-style: dashed; }
+.sf-style-bar input:disabled { opacity: .45; cursor: not-allowed; }
+.sf-sb-tgl:disabled { opacity: .45; cursor: not-allowed; }
+.sf-sb-reset { margin-left: auto; }
+.sf-sb-status { min-height: 3em; font-size: 13px; line-height: 1.5; color: var(--ink-3); } /* two lines are always reserved: a message appearing must not move the slide (the dialog is centred) */
+@media (pointer: coarse) { .sf-sb-color, .sf-sb-num, .sf-sb-font, .sf-sb-tgl { height: 40px; } .sf-sb-tgl { width: 40px; } }
+@media (max-width: 860px) { .sf-sb-reset { margin-left: 0; } .sf-sb-font { width: 130px; } }

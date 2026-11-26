@@ -513,7 +513,7 @@ const state = (pg) => pg.evaluate(() => {
   await openRendered(ui, 'Selection deck');
   let s = await state(ui);
   ok(s.count === 0 && /Nothing selected/.test(s.status), 'nothing is selected when the Rendered tab opens, and the status line says how to select', s);
-  ok(await ui.evaluate(() => !document.querySelector('.rendered-host input, .rendered-host textarea, .rendered-host [contenteditable], .rendered-host button[type=submit]') && !document.querySelector('.sf-sel-status button')), 'still read-only: no inputs, no toolbar, no edit or save controls were added');
+  ok(await ui.evaluate(() => ![...document.querySelectorAll('.rendered-host input, .rendered-host textarea, .rendered-host [contenteditable], .rendered-host button[type=submit]')].some((n) => !n.closest('.sf-style-bar')) && !document.querySelector('.sf-sel-status button')), 'no inputs, no edit or save controls outside the style bar (3.2.6-D: its controls are the only ones; the slide and the status line have none)');
 
   await ui.mouse.click(...(await at(ui, 450, 300)));
   s = await state(ui);
@@ -999,7 +999,7 @@ section('move preview in the real UI: mouse (Rendered tab)');
   ok(Math.max(Math.abs(b.out.l - b.node.l), Math.abs(b.out.r - b.node.r), Math.abs(b.out.t - b.node.t), Math.abs(b.out.b - b.node.b)) <= 1 && b.hs.every((p, i) => Math.abs(p[0] - a.hs[i][0] - 60 * sc) <= 0.8 && Math.abs(p[1] - a.hs[i][1] - 40 * sc) <= 0.8), 'the outline and all handles moved with it', b);
   ok(/Selected: Shape “front-rect” \(ppt\/slides\/slide1\.xml#3\)\. Moved in the preview by 60 pt, 40 pt \(not saved\)/.test(b.status), 'the status line reports the preview move in points and says it is not saved', b.status);
   ok(b.us === '' && b.count === 1 && b.scrollY === a.scrollY, 'no text selection was left switched off, one outline, the page did not scroll');
-  ok(await ui.evaluate(() => !document.querySelector('.rendered-host input, .rendered-host textarea, .rendered-host [contenteditable], .rendered-host button[type=submit]') && !document.querySelector('.sf-sel-status button, .sf-frame button')), 'still no inputs, buttons or edit / save controls on the slide or in its status line');
+  ok(await ui.evaluate(() => ![...document.querySelectorAll('.rendered-host input, .rendered-host textarea, .rendered-host [contenteditable], .rendered-host button[type=submit]')].some((n) => !n.closest('.sf-style-bar')) && !document.querySelector('.sf-sel-status button, .sf-frame button')), 'still no inputs, buttons or edit / save controls on the slide or in its status line (the style bar is the only place with controls)');
   // a tap on the moved element keeps it selected; the moved element is what is under the pointer now
   await ui.mouse.click(...(await at(ui, 510, 340)));
   ok((await mv()).name === 'front-rect' && (await mv()).moved === 1, 'clicking the moved element at its new place selects it (and does not undo the move)');
@@ -3532,8 +3532,673 @@ section('Phase 3.2.6-A: style edit-state (text colour / size / font / bold / ita
   const src = (f) => readFileSync(path.join(ROOT, f), 'utf8');
   const es = src('js/model/edit-state.js');
   ok(!/\bdocument\b|\bwindow\b|\.style\.|setAttribute|innerHTML|import\(|fetch\(/.test(es.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')), 'edit-state.js stays pure data (no DOM, no CSSOM, no network) after 3.2.6-A');
-  ok(['js/render/render.js', 'js/render/selection.js', 'js/render/text-edit.js', 'js/ui/rendered.js', 'js/model/resolve.js', 'js/model/scene.js', 'js/pptx/design.js'].every((f) => !/commitStyle|effectiveStyle|effectiveStyledText|stylesForSlide|discardStyle|hasStyle/.test(src(f))), 'rendering, controller, text editor, UI and resolver do not use the style API yet (that is 3.2.6-B)');
+  ok(['js/render/text-edit.js', 'js/ui/rendered.js', 'js/model/resolve.js', 'js/model/scene.js', 'js/pptx/design.js'].every((f) => !/commitStyle|effectiveStyle|effectiveStyledText|stylesForSlide|discardStyle|hasStyle/.test(src(f))), 'text editor, UI and resolver do not use the style API (the renderer does since 3.2.6-B, the controller since 3.2.6-C)');
   ok(/commitStyle|effectiveStyledText/.test(es) && !/exportPptx|writeXml|serialize|XMLSerializer|zip\.file/.test(es), 'no XML is written and nothing is exported by the style edit-state');
+}
+
+
+// ======================================================================================================
+section('Phase 3.2.6-B: the renderer draws style records (render.js only): colour, size, font, bold, italic, fill, outline colour');
+{
+  const P326 = path.join(FX, 'p326a-styles.pptx'); const kb = page.keyboard;
+  const res = await page.evaluate(async (b64deck) => {
+    const es = await import('/js/model/edit-state.js'); const rn = await import('/js/render/render.js');
+    const out = []; const J = (v) => JSON.stringify(v);
+    const T = (name, cond, detail) => out.push([name, !!cond, cond ? undefined : (detail === undefined ? '' : J(detail)).slice(0, 700)]);
+    const redraw = () => globalThis.__draw(b64deck, 0);
+    const sc = () => globalThis.__s.sc; const hnd = () => globalThis.__s.hnd;
+    const el = (n) => sc().elements.find((x) => x.name === n); const id = (n) => el(n).id; const node = (n) => hnd().nodes.get(id(n));
+    const mk = (n, patch) => { const S = es.createEditState(); const r = S.commitStyle(sc(), id(n), patch); if (!r.ok) throw new Error(`${n}: ${r.reason}`); return S.getStyle(id(n)); };
+    const paths = (n) => [...node(n).querySelectorAll(':scope > svg.sf-geo path')];
+    const tbox = (n) => node(n).querySelector(':scope > .sf-text'); const run1 = (n) => tbox(n).querySelector('.sf-r'); const cs = (x) => getComputedStyle(x);
+    const hex = (c) => { const m = /rgba?\((\d+), (\d+), (\d+)/.exec(c); return m ? [m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, '0')).join('').toUpperCase() : c; };
+    const over = (n) => { const b = tbox(n); const i = b.firstElementChild; return i.scrollHeight - (b.clientHeight - parseFloat(cs(b).paddingTop) - parseFloat(cs(b).paddingBottom)); };
+    const attrs = (p) => J(['stroke', 'stroke-width', 'stroke-linejoin', 'stroke-linecap', 'stroke-dasharray', 'stroke-opacity', 'fill', 'fill-opacity', 'marker-start', 'marker-end'].map((a) => p.getAttribute(a)));
+    const rect4 = (n) => { const b = tbox(n); return J(['left', 'top', 'width', 'height'].map((k) => b.style[k])); };
+    const names = ['solid', 'nofill', 'grad', 'mixed', 'scaled', 'emptyp', 'rtl', 'conn', 'pic', 'tbl', 'grp', 'grpchild', 'fx'];
+
+    // ---- unchanged rendering ----
+    await redraw(); const H0 = hnd().root.outerHTML; const N0 = Object.fromEntries(names.map((n) => [n, node(n).outerHTML]));
+    const rs = []; for (const n of names) rs.push(await hnd().setStyle(id(n), null));
+    T('setStyle(id, null) on every element draws nothing (all false) and the DOM is byte-identical', rs.every((r) => r === false) && hnd().root.outerHTML === H0);
+    T('an unknown id: false, nothing changes', (await hnd().setStyle('nope', { fill: { hex: '123456' } })) === false && hnd().root.outerHTML === H0);
+    const unst = []; for (const n of ['pic', 'tbl', 'grp']) unst.push(await hnd().setStyle(id(n), { id: id(n), fill: { hex: '123456' }, text: { b: true } })); unst.push(await hnd().setStyle(id('emptyp'), { id: id('emptyp'), text: { b: true } }));
+    T('a picture, a table and a group are never restyled (false, whatever the record says), nor is a text style for an empty paragraph (there is no text box): the DOM is unchanged', unst.every((r) => r === false) && N0.pic === node('pic').outerHTML && N0.tbl === node('tbl').outerHTML && N0.grp === node('grp').outerHTML && hnd().root.outerHTML === H0, unst);
+
+    // ---- fill and outline ----
+    { await redraw(); const o = node('solid'); const svg0 = o.querySelector(':scope > svg.sf-geo'); const p0 = paths('solid')[0]; const a0 = attrs(p0); const tx0 = tbox('solid').outerHTML; const sty0 = o.getAttribute('style'); const sz0 = svg0.style.width + svg0.style.height;
+      const r = await hnd().setStyle(id('solid'), mk('solid', { fill: { hex: '00ff00' } })); const p1 = paths('solid');
+      T('fill: a solid fill is drawn (fill #00FF00); outline, text box and the element\'s own style are as before', r === true && p1.length === 1 && p1[0].getAttribute('fill') === '#00FF00' && p1[0].getAttribute('stroke') === p0.getAttribute('stroke') && p1[0].getAttribute('stroke-width') === p0.getAttribute('stroke-width') && tbox('solid').outerHTML === tx0 && o.getAttribute('style') === sty0 && o.querySelector(':scope > svg.sf-geo').style.width + o.querySelector(':scope > svg.sf-geo').style.height === sz0, [r, a0, attrs(p1[0])]);
+      await hnd().setStyle(id('solid'), mk('solid', { line: { hex: 'ffff00' } })); const p2 = paths('solid')[0];
+      T('outline colour: stroke #FFFF00, width / join / dash / opacity as the file, fill as the file', p2.getAttribute('stroke') === '#FFFF00' && J([p2.getAttribute('stroke-width'), p2.getAttribute('stroke-linejoin'), p2.getAttribute('stroke-dasharray')]) === J([p0.getAttribute('stroke-width'), p0.getAttribute('stroke-linejoin'), p0.getAttribute('stroke-dasharray')]) && p2.getAttribute('fill') === p0.getAttribute('fill'), [a0, attrs(p2)]);
+      await hnd().setStyle(id('solid'), mk('solid', { fill: { hex: '010203' }, line: { hex: '040506' } })); const p3 = paths('solid')[0];
+      T('both at once', p3.getAttribute('fill') === '#010203' && p3.getAttribute('stroke') === '#040506');
+      await hnd().setStyle(id('solid'), mk('solid', { fill: { hex: '0a0b0c' } }));
+      T('a second record replaces the first (no leftovers): outline back to the file\'s, fill the new one', paths('solid')[0].getAttribute('stroke') === '#0000FF' && paths('solid')[0].getAttribute('fill') === '#0A0B0C' && node('solid').querySelectorAll(':scope > svg.sf-geo').length === 1);
+      const r0 = await hnd().setStyle(id('solid'), null);
+      T('null puts the file\'s own drawing back: the element is byte-identical, and the very same SVG node', r0 === true && node('solid').outerHTML === N0.solid && node('solid').querySelector(':scope > svg.sf-geo') === svg0); }
+    { await redraw(); const n0 = node('grad').outerHTML; const hadGrad = !!node('grad').querySelector('linearGradient, radialGradient');
+      await hnd().setStyle(id('grad'), mk('grad', { fill: { hex: '0000ff' } })); const g = node('grad');
+      T('a gradient fill is replaced by the solid colour (no gradient left in the SVG); null brings the gradient back exactly', hadGrad && !g.querySelector('linearGradient, radialGradient') && paths('grad')[0].getAttribute('fill') === '#0000FF' && paths('grad')[0].getAttribute('stroke') === '#00AA00' && (await hnd().setStyle(id('grad'), null)) && node('grad').outerHTML === n0);
+      await hnd().setStyle(id('nofill'), mk('nofill', { fill: { hex: '123456' } }));
+      T('a missing fill becomes a solid one; the pointer-area follows (the path has a fill now)', paths('nofill')[0].getAttribute('fill') === '#123456' && paths('nofill')[0].getAttribute('stroke') === 'none');
+      await hnd().setStyle(id('grpchild'), mk('grpchild', { fill: { hex: '654321' }, line: { hex: 'ABCDEF' } }));
+      T('the child of a group is drawn with its style', paths('grpchild')[0].getAttribute('fill') === '#654321' && paths('grpchild')[0].getAttribute('stroke') === '#ABCDEF');
+      const c0 = paths('conn')[0]; const ca = attrs(c0); await hnd().setStyle(id('conn'), mk('conn', { line: { hex: '123456' } })); const c1 = paths('conn')[0];
+      T('a connector line: only the stroke colour changes', c1.getAttribute('stroke') === '#123456' && c1.getAttribute('stroke-width') === c0.getAttribute('stroke-width') && J(attrs(c1)) !== ca && c1.getAttribute('fill') === c0.getAttribute('fill')); }
+
+    { await redraw(); const o0 = node('fx').outerHTML; const s0 = node('fx').querySelector(':scope > svg.sf-geo'); const t0 = [s0.style.transform, s0.style.filter];
+      await hnd().setStyle(id('fx'), mk('fx', { fill: { hex: 'ff9900' }, line: { hex: 'ffffff' } })); const s1 = node('fx').querySelector(':scope > svg.sf-geo');
+      T('a flipped shape with a shadow: the restyled SVG keeps the flip and the shadow of the file exactly', t0[0] === 'scaleX(-1)' && /drop-shadow/.test(t0[1]) && s1 !== s0 && J([s1.style.transform, s1.style.filter]) === J(t0) && paths('fx')[0].getAttribute('fill') === '#FF9900', [t0, s1.style.transform, s1.style.filter]);
+      await hnd().setStyle(id('fx'), null); T('...and null restores it byte for byte', node('fx').outerHTML === o0); }
+
+    // ---- text style ----
+    { await redraw(); const o0 = node('solid').outerHTML; const svg0 = node('solid').querySelector(':scope > svg.sf-geo'); const rc0 = rect4('solid'); const orig = { c: hex(cs(run1('solid')).color), fs: cs(run1('solid')).fontSize, fw: cs(run1('solid')).fontWeight, fst: cs(run1('solid')).fontStyle };
+      const r = await hnd().setStyle(id('solid'), mk('solid', { text: { color: 'abcdef', size: 36, font: 'Georgia', b: true, i: true } })); const x = run1('solid'); const c = cs(x);
+      T('text: colour ABCDEF, 36 px, Georgia (with its self-hosted substitute), bold, italic', r === true && hex(c.color) === 'ABCDEF' && c.fontSize === '36px' && /^Georgia, "SF Liberation Serif"/.test(c.fontFamily) && Number(c.fontWeight) >= 700 && c.fontStyle === 'italic' && orig.c === '112233' && orig.fs === '20px', [orig, c.color, c.fontSize, c.fontFamily, c.fontWeight, c.fontStyle]);
+      T('...the shape\'s SVG node is the same one, the text box keeps its rectangle', node('solid').querySelector(':scope > svg.sf-geo') === svg0 && rect4('solid') === rc0);
+      await hnd().setStyle(id('solid'), mk('solid', { text: { color: '00ff00' } })); const y = cs(run1('solid'));
+      T('only the colour: size, family, weight, style stay the file\'s', hex(y.color) === '00FF00' && y.fontSize === orig.fs && /^Arial/.test(y.fontFamily) && y.fontWeight === orig.fw && y.fontStyle === orig.fst);
+      await hnd().setStyle(id('solid'), null);
+      T('null: the element is byte-identical to the file\'s drawing', node('solid').outerHTML === o0); }
+    { await redraw(); const link0 = (() => { const sp = [...tbox('mixed').querySelectorAll('.sf-r')]; const l = sp[3]; return { c: hex(cs(l).color), d: cs(l).textDecorationLine, t: l.textContent }; })(); const o0 = node('mixed').outerHTML;
+      await hnd().setStyle(id('mixed'), mk('mixed', { text: { color: 'ff8800', size: 18, b: true } })); const sp = [...tbox('mixed').querySelectorAll('.sf-r')]; const l = sp[3];
+      T('mixed runs: all four get 18 px and bold, the first three the new colour; the hyperlink run keeps the theme\'s colour and its underline and text', sp.length === 4 && sp.every((x) => cs(x).fontSize === '18px' && Number(cs(x).fontWeight) >= 700) && sp.slice(0, 3).every((x) => hex(cs(x).color) === 'FF8800') && hex(cs(l).color) === link0.c && cs(l).textDecorationLine === link0.d && l.textContent === link0.t && link0.d.includes('underline'), [link0, sp.map((x) => hex(cs(x).color))]);
+      await hnd().setStyle(id('mixed'), null); T('...and null restores it byte for byte', node('mixed').outerHTML === o0); }
+    { await redraw(); const p0 = tbox('rtl').querySelector('.sf-p'); const d0 = [p0.dir, tbox('rtl').querySelector('.sf-r').lang]; const o0 = node('rtl').outerHTML;
+      await hnd().setStyle(id('rtl'), mk('rtl', { text: { color: 'ff0000', font: 'Georgia', i: true } })); const p1 = tbox('rtl').querySelector('.sf-p'); const x = tbox('rtl').querySelector('.sf-r');
+      T('RTL: direction and language are kept, colour / italic applied, the family is the new one followed by the Arabic fallbacks', J([p1.dir, x.lang]) === J(d0) && p1.dir === 'rtl' && hex(cs(x).color) === 'FF0000' && cs(x).fontStyle === 'italic' && /^Georgia, "SF Liberation Serif", "Noto Naskh Arabic", "Noto Sans Arabic", "SF DejaVu Sans"/.test(cs(x).fontFamily), [d0, cs(x).fontFamily]);
+      await hnd().setStyle(id('rtl'), null); T('...null restores it exactly', node('rtl').outerHTML === o0); }
+
+    // ---- fonts are loaded before the text is drawn ----
+    { await redraw(); const fm = await import('/js/render/fonts.js');
+      const fam = ['Courier New', 'Georgia', 'Times New Roman', 'Tahoma', 'Verdana', 'Segoe UI', 'Helvetica', 'Consolas', 'Cambria', 'Arial Narrow'].find((n) => fm.SUBSTITUTES[n.toLowerCase()] && !fm.isInstalled(n));
+      if (!fam) T('fonts: every substitutable family is installed on this machine, so no self-hosted face is needed: nothing to check', true);
+      else {
+        const sub = fm.SUBSTITUTES[fam.toLowerCase()]; const calls = []; const orig = document.fonts.load.bind(document.fonts);
+        document.fonts.load = (spec, text) => { calls.push([spec, hex(cs(run1('solid')).color)]); return orig(spec, text); };
+        await hnd().setStyle(id('solid'), mk('solid', { text: { font: fam, b: true, i: true, color: 'ff0000' } }));
+        const faces = calls.filter((c) => c[0].includes(`italic 700 16px "${sub}"`));
+        T(`a bold italic face of a new family (${fam} -> ${sub}) is requested, and BEFORE the text is drawn (the text still had its old colour when the request was made)`, faces.length >= 1 && faces.every((c) => c[1] === '112233') && hex(cs(run1('solid')).color) === 'FF0000', calls);
+        T('...and it is there afterwards', document.fonts.check(`italic 700 16px "${sub}"`));
+        calls.length = 0; hnd().setText(id('solid'), el('solid').text, true, false);
+        T('setText (the controller\'s call, sync) keeps the style on and asks for the faces too', hex(cs(run1('solid')).color) === 'FF0000' && cs(run1('solid')).fontStyle === 'italic' && calls.some((c) => c[0].includes(`italic 700 16px "${sub}"`)), calls);
+        document.fonts.load = orig;
+      } }
+
+    // ---- stored fontScale and autofit ----
+    { await redraw(); const o0 = node('scaled').outerHTML; const e = el('scaled'); const b0 = tbox('scaled'); const f0 = [cs(run1('scaled')).fontSize, b0.dataset.autofit || null];
+      await hnd().setStyle(id('scaled'), mk('scaled', { text: { size: 30 } })); const b1 = tbox('scaled');
+      T('stored fontScale: the file draws 20 px unfitted; a size record draws the NOMINAL size (30 px), the shape is fitted from full size (shrink, fit base 0.625) and does not overflow', f0[0] === '20px' && f0[1] === null && cs(run1('scaled')).fontSize === '30px' && b1.dataset.autofit === 'shrink' && b1.dataset.fitBase === '0.625' && over('scaled') <= 1, [f0, cs(run1('scaled')).fontSize, b1.dataset.autofit, b1.dataset.fitBase, over('scaled')]);
+      hnd().setText(id('scaled'), e.text, true, false); const b2 = tbox('scaled');
+      T('the controller\'s own redraw (setText with edited = false) of a shape that has a text style is still drawn from full size: nominal 30 px, shrink with fit base 0.625', cs(run1('scaled')).fontSize === '30px' && b2.dataset.autofit === 'shrink' && b2.dataset.fitBase === '0.625', [cs(run1('scaled')).fontSize, b2.dataset.autofit]);
+      await hnd().setStyle(id('scaled'), mk('scaled', { text: { b: true } }));
+      T('a record without a size draws the shape as an edited one: full size (32 px), as 3.2.5-C does for a text edit', cs(run1('scaled')).fontSize === '32px' && Number(cs(run1('scaled')).fontWeight) >= 700 && over('scaled') <= 1, cs(run1('scaled')).fontSize);
+      await hnd().setStyle(id('scaled'), mk('scaled', { text: { size: 50 } })); const big = tbox('scaled');
+      T('a size that cannot fit shrinks in the frame: smaller than asked, no overflow, a fit note on the element', parseFloat(cs(run1('scaled')).fontSize) < 50 && over('scaled') <= 1 && big.style.getPropertyValue('--fit') !== '' && el('scaled').reasons.some((r) => r.text.startsWith('text overflows')) && el('scaled').support === 'approximated', [cs(run1('scaled')).fontSize, over('scaled'), el('scaled').support]);
+      await hnd().setStyle(id('scaled'), null);
+      T('null: byte-identical to the file again, the fit note and the support level are gone', node('scaled').outerHTML === o0 && el('scaled').support === 'native' && !el('scaled').reasons.some((r) => r.text.startsWith('text overflows')), [el('scaled').support]); }
+    { await redraw(); const o0 = node('mixed').outerHTML; const e0 = el('shrink'); void e0;
+      const S = es.createEditState(); const t0 = el('solid');
+      await hnd().setStyle(id('solid'), mk('solid', { text: { size: 60 } }));
+      T('a shape without a stored scale (here the solid rectangle has none): a size too big for it just draws that size, no autofit is invented', cs(run1('solid')).fontSize === '60px' && tbox('solid').dataset.autofit === undefined); void S; void t0; void o0; }
+
+    // ---- combined with text edits ----
+    { await redraw(); const e = el('solid'); const o0 = node('solid').outerHTML; const SS = es.createEditState();
+      SS.commitText(sc(), id('solid'), { paras: [{ p: 0, runs: [{ r: 0, text: 'Plain!' }] }] }); SS.commitStyle(sc(), id('solid'), { text: { color: 'ff0000', b: true }, fill: { hex: '00ff00' } });
+      hnd().setText(id('solid'), SS.effectiveText(e), true, true); await hnd().setStyle(id('solid'), SS.getStyle(id('solid'))); const h1 = node('solid').outerHTML;
+      const sp1 = tbox('solid').querySelector('.sf-r');
+      T('text edit first, then the style: the edited text "Plain!" with the style', sp1.textContent === 'Plain!' && hex(cs(sp1).color) === 'FF0000' && Number(cs(sp1).fontWeight) >= 700 && paths('solid')[0].getAttribute('fill') === '#00FF00');
+      await redraw(); await hnd().setStyle(id('solid'), SS.getStyle(id('solid'))); hnd().setText(id('solid'), SS.effectiveText(el('solid')), true, true);
+      T('style first, then the text edit (what the controller does on a commit): the same drawing, byte for byte', node('solid').outerHTML === h1);
+      await hnd().setStyle(id('solid'), null); const sp2 = tbox('solid').querySelector('.sf-r');
+      T('taking the style off keeps the text edit (text "Plain!", the file\'s colour and weight) and restores the SVG', sp2.textContent === 'Plain!' && hex(cs(sp2).color) === '112233' && paths('solid')[0].getAttribute('fill') === '#FF0000');
+      await hnd().setStyle(id('solid'), SS.getStyle(id('solid'))); hnd().setText(id('solid'), el('solid').text, true, false);
+      T('putting the file\'s text back keeps the style on it', tbox('solid').querySelector('.sf-r').textContent === 'Plain' && hex(cs(tbox('solid').querySelector('.sf-r')).color) === 'FF0000');
+      await hnd().setStyle(id('solid'), null); T('and null on top restores the file exactly', node('solid').outerHTML === o0); }
+
+    // ---- move / resize compatibility ----
+    { await redraw(); const o = node('solid'); o.style.left = '10px'; o.style.top = '20px'; o.style.transform = 'translate(5px, 6px) scale(1.1, 1)'; o.style.width = '333px'; const st0 = o.getAttribute('style'); const rc0 = rect4('solid');
+      await hnd().setStyle(id('solid'), mk('solid', { fill: { hex: '00ff00' }, text: { size: 30 } }));
+      T('a moved / resized element (its inline position, size and transform) keeps all of them, and its text box its rectangle, when restyled', o.getAttribute('style') === st0 && rect4('solid') === rc0 && node('solid') === o);
+      await hnd().setStyle(id('solid'), null); T('...and when the style is taken off', o.getAttribute('style') === st0); }
+
+    // ---- races and late fonts ----
+    { await redraw(); const orig = document.fonts.load.bind(document.fonts); document.fonts.load = (spec, text) => (/italic/.test(spec) ? new Promise((r) => setTimeout(r, 150)).then(() => orig(spec, text)) : orig(spec, text));
+      const a = mk('solid', { text: { i: true, color: 'ff0000' } }); const b = mk('solid', { text: { color: '0000ff' } });
+      const p1 = hnd().setStyle(id('solid'), a); const p2 = hnd().setStyle(id('solid'), b); const [r1, r2] = await Promise.all([p1, p2]); const x = cs(run1('solid'));
+      T('an OLDER call that finishes LAST (its face loads slowly) does not overwrite the newer one: it reports false, the newer record is what is drawn', r1 === false && r2 === true && hex(x.color) === '0000FF' && x.fontStyle === 'normal', [r1, r2, x.color, x.fontStyle]);
+      await redraw(); const f1 = mk('solid', { fill: { hex: '00ff00' } }); const f2 = mk('solid', { fill: { hex: '0000ff' } }); // (not the file's own FF0000: that is no record)
+      const q1 = hnd().setStyle(id('solid'), f1); const q2 = hnd().setStyle(id('solid'), f2); const [s1, s2] = await Promise.all([q1, q2]);
+      T('the same for the SVG: of two paint records in a row only the newer is drawn (the older reports false)', s1 === false && s2 === true && paths('solid')[0].getAttribute('fill') === '#0000FF' && node('solid').querySelectorAll(':scope > svg.sf-geo').length === 1, [s1, s2]);
+      await redraw(); let n = 0; const ff = hnd().fitText; hnd().fitText = function () { n++; return ff.call(this); };
+      await hnd().setStyle(id('solid'), a); const n0 = n; hnd().setText(id('solid'), el('solid').text, false, false); const n1 = n; await new Promise((r) => setTimeout(r, 400));
+      T('setText with a style that needs a slow face: it draws at once without fitting (refit = false), and fits again when the face has arrived', n1 === n0 && n > n1 && hex(cs(run1('solid')).color) === 'FF0000', [n0, n1, n]);
+      hnd().fitText = ff; document.fonts.load = orig; }
+
+    // ---- first drawing with records ----
+    { await redraw(); const recs = [mk('solid', { fill: { hex: '00ff00' }, text: { color: 'ff0000', size: 30 } }), mk('scaled', { text: { size: 30 } }), mk('mixed', { text: { b: true } }), mk('conn', { line: { hex: '123456' } })];
+      for (const r of recs) await hnd().setStyle(r.id, r); const norm = (h) => h.replace(/sf([gmcf])\d+/g, 'sf$1#').replace(/blob:[^"]+/g, 'blob'); // (the ids of gradients / markers / clips count up with every drawing; a picture gets a new blob URL)
+      const a = norm(hnd().root.outerHTML);
+      const host = document.createElement('div'); host.style.position = 'absolute'; host.style.left = '0px'; host.style.top = '1200px'; host.style.width = '960px'; document.body.append(host);
+      const h2 = await rn.renderSlide(sc(), host, { width: 960, styles: recs }); const b = norm(h2.root.outerHTML); const h3 = await rn.renderSlide(sc(), host, { width: 960, styles: new Map(recs.map((r) => [r.id, r])) }); const c = norm(h3.root.outerHTML);
+      const dif = (x, y) => { let i = 0; while (i < x.length && x[i] === y[i]) i++; return [i, x.slice(Math.max(0, i - 80), i + 100), y.slice(Math.max(0, i - 80), i + 100)]; };
+      T('renderSlide(..., { styles }) draws the records from the start: the same DOM as setStyle afterwards (array and Map)', a === b && b === c, [dif(a, b), dif(b, c)]);
+      host.remove(); }
+    return out;
+  }, b64(P326));
+  for (const [name, pass, detail] of res) ok(pass, name, detail);
+
+  // ---- with the real controller: a text edit session on a styled shape ----
+  await page.evaluate(async () => { const e = await import('/js/model/edit-state.js'); globalThis.__E = e.createEditState(); }); // the controller keeps a text commit only with an edit-state
+  await page.evaluate((b) => globalThis.__draw(b, 0, true), b64(P326));
+  const idS = await page.evaluate(() => globalThis.__s.sc.elements.find((x) => x.name === 'solid').id);
+  const recS = await page.evaluate(async (idS) => { const es = await import('/js/model/edit-state.js'); const S = es.createEditState(); S.commitStyle(globalThis.__s.sc, idS, { text: { color: 'ff0000', size: 30, b: true }, fill: { hex: '00ff00' } }); const rec = S.getStyle(idS); await globalThis.__s.hnd.setStyle(idS, rec); return rec; }, idS);
+  const sess = await page.evaluate((idS) => { globalThis.__s.sel.select(idS); return globalThis.__s.sel.beginEdit(idS); }, idS);
+  await page.evaluate(() => { const i = document.querySelector('.sf-text-editing'); if (!i) return; const p = i.children[0]; const rg = document.createRange(); rg.selectNodeContents(p); rg.collapse(false); const g = getSelection(); g.removeAllRanges(); g.addRange(rg); });
+  await kb.insertText('!'); const during = await page.evaluate(() => { const x = document.querySelector('.sf-text-editing .sf-r'); const c = getComputedStyle(x); return { t: x.textContent, color: c.color, fs: c.fontSize, fw: c.fontWeight }; });
+  await page.evaluate(() => globalThis.__s.sel.endEdit('api'));
+  const after = await page.evaluate((idS) => { const o = globalThis.__s.hnd.nodes.get(idS); const x = o.querySelector(':scope > .sf-text .sf-r'); const c = getComputedStyle(x); const p = o.querySelector(':scope > svg.sf-geo path'); return { t: x.textContent, color: c.color, fs: c.fontSize, fw: c.fontWeight, fill: p.getAttribute('fill'), editing: document.querySelectorAll('[contenteditable]').length }; }, idS);
+  ok(sess.ok === true && during.t === 'Plain!' && during.color === 'rgb(255, 0, 0)' && during.fs === '30px', 'text editing a styled shape: the edit DOM shows the style while typing', { sess, during });
+  ok(after.t === 'Plain!' && after.color === 'rgb(255, 0, 0)' && after.fs === '30px' && Number(after.fw) >= 700 && after.fill === '#00FF00' && after.editing === 0, 'after the commit the controller\'s own redraw (setText) keeps the style: text, colour, size, bold and the fill', after);
+
+  // ---- static guards ----
+  const src = (f) => readFileSync(path.join(ROOT, f), 'utf8');
+  const rn = src('js/render/render.js').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  ok(!/setAttribute\(\s*['"]style['"]|createElement\(\s*['"]style['"]|\.cssText|insertAdjacentHTML|innerHTML\s*=/.test(rn), 'render.js writes no inline style attribute, no <style>, no cssText and no HTML string (CSP): styles go through the CSSOM and SVG attributes');
+  ok(['js/render/text-edit.js', 'js/ui/rendered.js', 'js/model/resolve.js', 'js/model/scene.js', 'js/model/edit-state.js', 'js/pptx/design.js'].every((f) => !/\bsetStyle\b/.test(src(f))), 'the text editor, UI, resolver, scene and edit-state do not call or define setStyle: only render.js defines it and (since 3.2.6-C) the controller calls it');
+  ok(/from '\.\.\/model\/edit-state\.js'/.test(src('js/render/render.js')) && !/createEditState|commitStyle/.test(rn), 'the renderer imports only the pure functions effectiveText / effectiveStyle from the edit-state, it never holds or changes an edit-state');
+}
+
+// ======================================================================================================
+section('Phase 3.2.6-C: the controller connects style records and renderer (selection.js): drawn on attach, style(), reset(), stale draws');
+{
+  const P326 = path.join(FX, 'p326a-styles.pptx'); const kb = page.keyboard;
+  const res = await page.evaluate(async ({ b, bsel }) => {
+    const es = await import('/js/model/edit-state.js'); const sceneMod = await import('/js/model/scene.js'); const parserMod = await import('/js/pptx/parser.js');
+    const out = []; const J = (v) => JSON.stringify(v);
+    const T = (name, cond, detail) => out.push([name, !!cond, cond ? undefined : (detail === undefined ? '' : J(detail)).slice(0, 700)]);
+    const norm = (h) => h.replace(/sf([gmcf])\d+/g, 'sf$1#').replace(/blob:[^"]+/g, 'blob'); // (the ids of gradients / markers / clips count up with every drawing)
+    const S = () => globalThis.__s; const sc = () => S().sc; const hnd = () => S().hnd; const sel = () => S().sel; const E = () => globalThis.__E;
+    const draw = async (shared = true, idx = 0, deck = b) => { await globalThis.__draw(deck, idx, shared); await sel().ready; };
+    const fresh = async () => { globalThis.__E = es.createEditState(); await draw(); sel().clear(); };
+    const el = (n) => sc().elements.find((x) => x.name === n); const id = (n) => el(n).id; const node = (n) => hnd().nodes.get(id(n));
+    const tbox = (n) => node(n).querySelector(':scope > .sf-text'); const run1 = (n) => tbox(n).querySelector('.sf-r'); const cs = (x) => getComputedStyle(x);
+    const pth = (n) => [...node(n).querySelectorAll(':scope > svg.sf-geo path')]; const fillOf = (n) => pth(n)[0].getAttribute('fill');
+    const hex = (c) => { const m = /rgba?\((\d+), (\d+), (\d+)/.exec(c); return m ? [m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, '0')).join('').toUpperCase() : c; };
+    const snap = () => norm(hnd().root.outerHTML);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const fm = await import('/js/render/fonts.js');
+    const fam = ['Courier New', 'Georgia', 'Times New Roman', 'Tahoma', 'Verdana', 'Segoe UI', 'Helvetica', 'Consolas', 'Cambria', 'Arial Narrow'].find((n) => fm.SUBSTITUTES[n.toLowerCase()] && !fm.isInstalled(n)); // (a family drawn with a self-hosted face that has to be downloaded: only then a face can be slow)
+    const origLoad = document.fonts.load.bind(document.fonts);
+    const slow = (ms = 150) => { document.fonts.load = (spec, text) => (/italic/.test(spec) ? new Promise((r) => setTimeout(r, ms)).then(() => origLoad(spec, text)) : origLoad(spec, text)); }; // an italic face is slow to arrive
+    const SLOW = () => ({ font: fam, i: true, color: 'ff0000' }); // a text style that waits for such a face
+    const fast = () => { document.fonts.load = origLoad; };
+    const sceneKey = (s) => J(s.elements.map((e) => [e.id, e.text, e.style, e.world]));
+    const zipKey = async (zip) => { const o = []; for (const n of Object.keys(zip.files).sort()) { const f = zip.files[n]; if (f.dir) continue; const t = await f.async('string'); let h = 5381; for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0; o.push(`${n}:${t.length}:${h}`); } return o.join('|'); };
+    if (!fam) T('(every substitutable family is installed on this machine: no face is ever slow, so the checks of late faces below run with an immediate face)', true);
+    try {
+      // ---- the scene and the file are never touched: keys taken now, compared at the end ----
+      await fresh(); const K0 = sceneKey(sc()); const Z0 = await zipKey(S().parsed.zip); const H0 = snap(); const solid = id('solid');
+
+      // ---- style(): commit + draw ----
+      sel().select(solid);
+      const r1 = await sel().style(solid, { fill: { hex: '00ff00' }, text: { color: 'ff0000', b: true } }); const rec = E().getStyle(solid);
+      T('style(id, patch) commits to the edit-state and draws: ok, changed, drawn, not stale; the record is the edit-state\'s own; fill, text colour and weight are on the slide', r1.ok === true && r1.changed === true && r1.drawn === true && r1.stale === false && J(r1.edit) === J(rec) && fillOf('solid') === '#00FF00' && hex(cs(run1('solid')).color) === 'FF0000' && Number(cs(run1('solid')).fontWeight) >= 700, [r1, rec]);
+      T('the selection is untouched by it: still selected, exactly one outline', sel().id === solid && hnd().root.querySelectorAll('.sf-sel').length === 1);
+      sel().clear(); const H1 = snap();
+      T('(sanity) the styled slide differs from the file\'s', H1 !== H0);
+
+      // ---- persists across a redraw ----
+      await draw(); sel().clear();
+      T('a slide drawn again (a new renderSlide and controller on the same edit-state) shows the style once `ready` has resolved: the same DOM, byte for byte', snap() === H1 && J(E().getStyle(solid)) === J(rec), [snap().length, H1.length]);
+      await draw(); sel().clear(); await draw(); sel().clear();
+      T('...and again after more redraws (nothing is applied twice or lost)', snap() === H1);
+
+      // ---- another slide and back (3 slides: p321-selection) ----
+      { globalThis.__E = es.createEditState(); await draw(true, 0, bsel); const back = id('back-rect'); const a0 = fillOf('back-rect');
+        const ra = await sel().style(back, { fill: { hex: '00ff00' } }); const a1 = fillOf('back-rect');
+        await draw(true, 1, bsel); const s2 = id('s2-rect'); const b0 = fillOf('s2-rect'); const rb = await sel().style(s2, { fill: { hex: '0000ff' } });
+        await draw(true, 2, bsel); const third = sc().elements.every((e) => !E().hasStyle(e.id));
+        await draw(true, 0, bsel); const a2 = fillOf('back-rect'); await draw(true, 1, bsel); const b2 = fillOf('s2-rect');
+        T('another slide and back: each slide draws its own records when it is shown again (slide 1 #00FF00, slide 2 #0000FF), the third slide has none', ra.ok && rb.ok && a0 !== '#00FF00' && a1 === '#00FF00' && a2 === '#00FF00' && b0 !== '#0000FF' && b2 === '#0000FF' && third && E().size === 2, [a0, a1, a2, b0, b2, third]);
+        await draw(true, 0, bsel); sel().reset();
+        T('reset() forgets the records of THIS slide only: slide 1\'s is gone and its fill is the file\'s again, slide 2\'s is still there', E().hasStyle(back) === false && fillOf('back-rect') === a0 && E().hasStyle(s2) && E().size === 1, [fillOf('back-rect'), a0, E().size]);
+        await draw(true, 1, bsel); T('...and slide 2 still draws it', fillOf('s2-rect') === '#0000FF'); }
+
+      // ---- coexistence with moves, resizes, text edits (the four kinds of record on one element) ----
+      await fresh();
+      { const S4 = E(); const m = S4.commit(sc(), solid, 30, 20); const rz = S4.commitResize(sc(), solid, { w: 200, h: 90, tx: 10, ty: 5 });
+        const tx = S4.commitText(sc(), solid, { paras: [{ p: 0, runs: [{ r: 0, text: 'Plain!' }] }] }); const st = S4.commitStyle(sc(), solid, { fill: { hex: '00ff00' }, text: { color: 'ff0000', size: 30 } });
+        T('(setup) one element holds a move, a resize, a text edit and a style edit', m.ok && rz.ok && tx.ok && st.ok && S4.size === 1 && S4.has(solid) && S4.hasText(solid) && S4.hasStyle(solid) && S4.hasResize(solid), [m, rz, tx, st]);
+        await draw(); const o = node('solid'); const trn = o.style.getPropertyValue('translate'); const tf = o.style.transform; const sp = tbox('solid').querySelector('.sf-r');
+        T('drawn again: moved (translate), resized (scale in the transform), the edited text, and the style (colour, 30 px, fill) are ALL there', /30/.test(trn) && /scale\(/.test(tf) && sp.textContent === 'Plain!' && hex(cs(sp).color) === 'FF0000' && cs(sp).fontSize === '30px' && fillOf('solid') === '#00FF00', [trn, tf, sp.textContent, cs(sp).fontSize, fillOf('solid')]);
+        const v0 = S4.version; sel().reset();
+        T('reset() undoes all four: the DOM is the file\'s again, byte for byte, and the edit-state holds nothing (before 3.2.6-C the style record of a moved element was dropped here but the slide stayed styled)', snap() === H0 && S4.size === 0 && S4.version > v0 && node('solid').style.getPropertyValue('translate') === '' && !node('solid').style.transform, [snap().length, H0.length, S4.size]); }
+
+      // ---- reset of an element that was only styled, and of one drawn from a gradient ----
+      await fresh();
+      { await sel().style(id('mixed'), { text: { b: true, color: 'ff8800' } }); await sel().style(id('grad'), { fill: { hex: '0000ff' } }); await sel().style(id('conn'), { line: { hex: '123456' } });
+        const gotStyled = snap() !== H0 && !node('grad').querySelector('linearGradient, radialGradient');
+        sel().reset();
+        T('reset() also puts back elements that were only styled (never moved): text, gradient fill and connector outline are the file\'s again, byte for byte, and no record is left', gotStyled && snap() === H0 && E().size === 0, [gotStyled, E().size]); }
+
+      // ---- revert through style() ----
+      await fresh();
+      { await sel().style(solid, { fill: { hex: '00ff00' }, line: { hex: 'ffff00' }, text: { color: 'ff0000', size: 30 } });
+        const rr = await sel().style(solid, { fill: null, line: null, text: null });
+        T('style(id, { fill: null, line: null, text: null }) takes the whole style off: ok, changed, drawn, no record, the DOM is the file\'s', rr.ok && rr.changed && rr.drawn && rr.edit === null && !E().hasStyle(solid) && snap() === H0, [rr]);
+        const svg1 = node('solid').querySelector(':scope > svg.sf-geo'); const rn1 = await sel().style(solid, { fill: { hex: '00ff00' } }); const svg2 = node('solid').querySelector(':scope > svg.sf-geo'); const v1 = E().version;
+        const rn2 = await sel().style(solid, { fill: { hex: '00ff00' } });
+        T('the same patch again changes nothing: changed false, drawn false, the edit-state version stays, the drawn SVG is the very same node (no redraw)', rn1.changed === true && rn2.ok === true && rn2.changed === false && rn2.drawn === false && E().version === v1 && node('solid').querySelector(':scope > svg.sf-geo') === svg2 && svg1 !== svg2, [rn2, E().version, v1]); }
+
+      // ---- refusals leave everything as it was ----
+      await fresh();
+      { const v0 = E().version; const rs = []; const why = (r) => (r.ok === false ? r.reason : 'OK');
+        for (const n of ['pic', 'tbl', 'grp']) rs.push(why(await sel().style(id(n), { fill: { hex: '123456' } })));
+        rs.push(why(await sel().style('ppt/slides/slide1.xml#9999', { fill: { hex: '123456' } })));
+        rs.push(why(await sel().style(solid, { bogus: 1 }))); rs.push(why(await sel().style(id('conn'), { text: { b: true } }))); rs.push(why(await sel().style(id('conn'), { fill: { hex: '123456' } }))); rs.push(why(await sel().style(id('nofill'), { line: { hex: '123456' } })));
+        T('refusals: a picture, a table, a group and an unknown id are not-styleable; a bad patch is invalid; the edit-state\'s other reasons (no-text, no-fill-target, no-outline) come through', J(rs) === J(['not-styleable', 'not-styleable', 'not-styleable', 'not-styleable', 'invalid', 'no-text', 'no-fill-target', 'no-outline']), rs);
+        T('...and none of them changed the edit-state (version, size) or the drawing', E().version === v0 && E().size === 0 && snap() === H0);
+        await draw(false); const rn = await sel().style(solid, { fill: { hex: '00ff00' } });
+        T('a controller without an edit-state refuses with no-edit-state and draws nothing', rn.ok === false && rn.reason === 'no-edit-state' && fillOf('solid') === '#FF0000'); }
+
+      // ---- an element that is in the file but not drawn (hidden) cannot be styled through the controller ----
+      { globalThis.__E = es.createEditState(); await draw(true, 0, bsel); const hid = id('hidden-rect'); const rh = await sel().style(hid, { fill: { hex: '123456' } }); const direct = es.createEditState().commitStyle(sc(), hid, { fill: { hex: '123456' } });
+        T('a hidden element (drawn nowhere, not selectable) is refused with not-styleable and no record is made, although the edit-state itself would accept it', direct.ok === true && rh.ok === false && rh.reason === 'not-styleable' && !E().hasStyle(hid) && E().size === 0, [rh, direct.ok]); }
+
+      // ---- hit-testing follows the drawn style (p321-selection, slide 1: `outline-only` has no fill and no text) ----
+      { globalThis.__E = es.createEditState(); await draw(true, 0, bsel); const oo = id('outline-only'); const before = sel().pick(660, 340); await sel().style(oo, { fill: { hex: '123456' } }); const during = sel().pick(660, 340); await sel().style(oo, { fill: null }); const after = sel().pick(660, 340);
+        T('the inside of an outline-only shape is not picked; once a fill style is drawn it is (the pointer area follows the drawing); after the revert it is not again', before === null && during === oo && after === null, [before, during, after]); }
+
+      // ---- stale draws ----
+      slow(150);
+      { await fresh(); sel().select(solid);
+        const p1 = sel().style(solid, { text: SLOW() }); const p2 = sel().style(solid, { text: { i: null } }); const [a, c] = await Promise.all([p1, p2]); const x = cs(run1('solid'));
+        T('two style() calls in a row, the OLDER one finishing last (its italic face is slow): it resolves stale and drawn false, the newer one is what is drawn (red, not italic)', a.ok && a.stale === true && a.drawn === false && c.ok && c.stale === false && c.drawn === true && hex(x.color) === 'FF0000' && x.fontStyle === 'normal' && J(E().getStyle(solid).text) === J({ color: 'FF0000', font: fam }), [a, c, x.color, x.fontStyle, E().getStyle(solid)]); }
+      { await fresh(); const p = sel().style(solid, { fill: { hex: '00ff00' }, text: SLOW() }); await wait(40); const midFill = fillOf('solid'); sel().reset(); const r = await p;
+        T('reset() while a style is still being drawn (the fill is on, the text waits for its face): the file\'s drawing is back at once and stays when the late draw ends; the late draw is stale and the record is gone', midFill === '#00FF00' && r.ok && r.stale === true && r.drawn === false && snap() === H0 && E().size === 0, [midFill, r, snap().length, H0.length]); }
+      { await fresh(); const p = sel().style(solid, { text: SLOW() }); sel().reset(); const r = await p; await wait(250);
+        T('reset() right after style() (before anything was drawn): nothing of the late draw ever shows', r.stale === true && snap() === H0 && E().size === 0); }
+      { await fresh(); E().commitStyle(sc(), solid, { fill: { hex: '00ff00' }, text: SLOW() }); await globalThis.__draw(b, 0, true); sel().reset(); await sel().ready; await wait(250);
+        T('the records drawn on attach are stale too: reset() right after attaching leaves the file\'s drawing and an empty edit-state', snap() === H0 && E().size === 0); }
+      { await fresh(); sel().select(solid); const old = sel(); const p = old.style(solid, { fill: { hex: '00ff00' }, text: SLOW() }); await draw(); const oldRes = await p; const sNow = hnd(); sel().clear();
+        const expect = es.createEditState(); expect.commitStyle(sc(), solid, { fill: { hex: '00ff00' }, text: SLOW() });
+        T('a slide drawn again while a style is being drawn on the old one: the new slide shows the record once, the old draw ends quietly (no throw) and does not touch the new slide', oldRes.ok === true && fillOf('solid') === '#00FF00' && hex(cs(run1('solid')).color) === 'FF0000' && cs(run1('solid')).fontStyle === 'italic' && hnd() === sNow && hnd().root.querySelectorAll('.sf-sel').length === 0 && J(E().getStyle(solid)) === J(expect.getStyle(solid)), [oldRes, fillOf('solid')]);
+        const v = E().version; const lateRes = await old.style(solid, { fill: { hex: '0000ff' } });
+        T('a disposed controller refuses style() (reason disposed) and changes nothing', lateRes.ok === false && lateRes.reason === 'disposed' && E().version === v && fillOf('solid') === '#00FF00', lateRes); }
+      { await fresh(); sel().select(solid); const p = sel().style(solid, { text: SLOW() }); const ref = sel().beginEdit(solid); const ev = S().editEvents.filter((m) => m.phase === 'refused').pop(); await p; const ok1 = sel().beginEdit(solid); const was = sel().editing; sel().endEdit('api');
+        T('text edit mode is refused while a style is being drawn (reason style-pending, reported to onEdit with a message), and starts once the draw is done', ref.ok === false && ref.reason === 'style-pending' && ev && ev.reason === 'style-pending' && typeof ev.message === 'string' && sel().editing === null && ok1.ok === true && was === solid, [ref, ev, ok1, was]); }
+      { await fresh(); E().commitStyle(sc(), solid, { text: SLOW() }); await globalThis.__draw(b, 0, true); sel().select(solid); const ref = sel().beginEdit(solid); await sel().ready; const ok1 = sel().beginEdit(solid); sel().endEdit('api');
+        T('the same right after attaching: the records drawn on attach hold edit mode off until `ready`', ref.ok === false && ref.reason === 'style-pending' && ok1.ok === true, [ref, ok1]); }
+      fast();
+
+      // ---- a committed text edit that lands while the renderer waits for a face is not overwritten (render.js, found by the stale-draw checks) ----
+      slow(150);
+      { await draw(false); const e = el('solid'); const T2 = es.createEditState(); T2.commitText(sc(), solid, { paras: [{ p: 0, runs: [{ r: 0, text: 'Plain!' }] }] }); T2.commitStyle(sc(), solid, { text: SLOW() });
+        const p = hnd().setStyle(solid, T2.getStyle(solid)); hnd().setText(solid, T2.effectiveText(e), true, true); const drew = await p; const x = run1('solid');
+        T('renderer: a setText that comes in while setStyle waits for its face is NOT overwritten by the text the style call started with: the edited text is shown, styled', drew === true && x.textContent === 'Plain!' && hex(cs(x).color) === 'FF0000' && cs(x).fontStyle === 'italic', [drew, x.textContent, cs(x).color]); }
+      fast();
+
+      // ---- the scene and the file stayed as they were ----
+      await draw(false);
+      T('the Scene Model (text, style, world of every element) and every part of the file are what they were before all of this', sceneKey(sc()) === K0 && (await zipKey(S().parsed.zip)) === Z0);
+    } finally { fast(); }
+    return out;
+  }, { b: b64(P326), bsel: b64(SEL) });
+  for (const [name, pass, detail] of res) ok(pass, name, detail);
+
+  // ---- the real controller: typing, then style(), then a real drag, a redraw and reset() ----
+  const idS = async () => page.evaluate(() => globalThis.__s.sc.elements.find((x) => x.name === 'solid').id);
+  await page.evaluate(async (b) => { const e = await import('/js/model/edit-state.js'); globalThis.__E = e.createEditState(); await globalThis.__draw(b, 0, true); globalThis.__H0 = globalThis.__s.hnd.root.outerHTML; }, b64(P326));
+  const solidId = await idS();
+  const started = await page.evaluate((id) => { globalThis.__s.sel.select(id); return globalThis.__s.sel.beginEdit(id); }, solidId);
+  await page.evaluate(() => { const i = document.querySelector('.sf-text-editing'); if (!i) return; const p = i.children[0]; const rg = document.createRange(); rg.selectNodeContents(p); rg.collapse(false); const g = getSelection(); g.removeAllRanges(); g.addRange(rg); });
+  await kb.insertText('!');
+  const styled = await page.evaluate((id) => globalThis.__s.sel.style(id, { text: { color: '00ff00', size: 30 }, fill: { hex: '0000ff' } }), solidId);
+  const st1 = await page.evaluate((id) => { const { sel, hnd, editEvents } = globalThis.__s; const o = hnd.nodes.get(id); const x = o.querySelector(':scope > .sf-text .sf-r'); const c = getComputedStyle(x); const E = globalThis.__E; const last = editEvents[editEvents.length - 1];
+    return { t: x.textContent, color: c.color, fs: c.fontSize, fill: o.querySelector(':scope > svg.sf-geo path').getAttribute('fill'), editing: sel.editing, ce: document.querySelectorAll('[contenteditable]').length, last, txt: E.getText(id) && E.getText(id).paras, sty: E.getStyle(id) }; }, solidId);
+  ok(started.ok === true && styled.ok === true && styled.drawn === true, 'real typing in a shape, then style(): the edit mode starts and style() is ok and drawn', { started, styled });
+  ok(st1.editing === null && st1.ce === 0 && st1.last && st1.last.phase === 'end' && st1.last.reason === 'style' && st1.last.committed === true && st1.last.changed === true, 'style() ends the text edit first (reason style) and the typed text is KEPT (committed, changed); no contenteditable is left', st1);
+  ok(st1.t === 'Plain!' && st1.color === 'rgb(0, 255, 0)' && st1.fs === '30px' && st1.fill === '#0000FF' && st1.txt && st1.sty && st1.sty.text.size === 30, 'the slide shows the typed text with the new style and the edit-state holds both the text and the style record', st1);
+  // a real drag of the styled element
+  await page.mouse.move(300, 80); await page.mouse.down(); await page.mouse.move(340, 120, { steps: 6 }); await page.mouse.up();
+  const st2 = await page.evaluate((id) => { const { hnd } = globalThis.__s; const o = hnd.nodes.get(id); const x = o.querySelector(':scope > .sf-text .sf-r'); const E = globalThis.__E; return { move: E.get(id) && E.get(id).slideDelta, tr: o.style.getPropertyValue('translate'), t: x.textContent, color: getComputedStyle(x).color, fill: o.querySelector(':scope > svg.sf-geo path').getAttribute('fill'), sty: J(E.getStyle(id)), size: E.size }; function J(v) { return JSON.stringify(v); } }, solidId);
+  ok(st2.move && st2.move.dx > 0 && /calc/.test(st2.tr) && st2.t === 'Plain!' && st2.color === 'rgb(0, 255, 0)' && st2.fill === '#0000FF' && st2.size === 1, 'a real drag of the styled element commits the move and leaves text, colour and fill as they were (one element, three records)', st2);
+  await page.evaluate(async (b) => { await globalThis.__draw(b, 0, true); await globalThis.__s.sel.ready; }, b64(P326));
+  const st3 = await page.evaluate((id) => { const { hnd } = globalThis.__s; const o = hnd.nodes.get(id); const x = o.querySelector(':scope > .sf-text .sf-r'); return { tr: o.style.getPropertyValue('translate'), t: x.textContent, color: getComputedStyle(x).color, fs: getComputedStyle(x).fontSize, fill: o.querySelector(':scope > svg.sf-geo path').getAttribute('fill') }; }, solidId);
+  ok(/calc/.test(st3.tr) && st3.t === 'Plain!' && st3.color === 'rgb(0, 255, 0)' && st3.fs === '30px' && st3.fill === '#0000FF', 'drawn again (redraw): moved, edited text and style are all back', st3);
+  const st4 = await page.evaluate(() => { const { sel, hnd } = globalThis.__s; sel.reset(); sel.clear(); const E = globalThis.__E; const nm = (t) => t.replace(/sf([gmcf])\d+/g, 'sf$1#').replace(/blob:[^"]+/g, 'blob'); return { same: nm(hnd.root.outerHTML) === nm(globalThis.__H0), size: E.size, ce: document.querySelectorAll('[contenteditable]').length }; });
+  ok(st4.same && st4.size === 0 && st4.ce === 0, 'reset() undoes the move, the text and the style: the slide is the file\'s again and the edit-state is empty', st4);
+
+  // ---- a text edit session on a styled shape that ends by reset() ----
+  await page.evaluate(async (b) => { const e = await import('/js/model/edit-state.js'); globalThis.__E = e.createEditState(); await globalThis.__draw(b, 0, true); globalThis.__H0 = globalThis.__s.hnd.root.outerHTML; const id = globalThis.__s.sc.elements.find((x) => x.name === 'solid').id; await globalThis.__s.sel.style(id, { text: { color: 'ff0000' }, fill: { hex: '00ff00' } }); globalThis.__s.sel.select(id); globalThis.__s.sel.beginEdit(id); }, b64(P326));
+  await page.evaluate(() => { const i = document.querySelector('.sf-text-editing'); const p = i.children[0]; const rg = document.createRange(); rg.selectNodeContents(p); rg.collapse(false); const g = getSelection(); g.removeAllRanges(); g.addRange(rg); });
+  await kb.insertText('?');
+  const rr = await page.evaluate(() => { const { sel, hnd, editEvents } = globalThis.__s; sel.reset(); sel.clear(); const E = globalThis.__E; const last = editEvents[editEvents.length - 1]; const nm = (t) => t.replace(/sf([gmcf])\d+/g, 'sf$1#').replace(/blob:[^"]+/g, 'blob'); return { same: nm(hnd.root.outerHTML) === nm(globalThis.__H0), size: E.size, ce: document.querySelectorAll('[contenteditable]').length, editing: sel.editing, last }; });
+  ok(rr.same && rr.size === 0 && rr.ce === 0 && rr.editing === null && rr.last.reason === 'reset' && rr.last.committed === false, 'reset() during a text edit of a styled shape: the edit ends (reason reset, nothing kept), the style is taken off, the slide is the file\'s byte for byte', rr);
+
+  // ---- static guards ----
+  const src = (f) => readFileSync(path.join(ROOT, f), 'utf8'); const code = (f) => src(f).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const ctl = code('js/render/selection.js');
+  ok(/handle\.setStyle\(/.test(ctl) && /edits\.commitStyle\(/.test(ctl) && /edits\.discardStyle\(/.test(ctl) && /edits\.stylesForSlide\(/.test(ctl), 'the controller asks the edit-state (commitStyle, stylesForSlide, discardStyle, getStyle) and the renderer (handle.setStyle) and nothing else for styles');
+  ok(!/effectiveStyle|effectiveStyledText|buildShapeSvg|createEditState/.test(ctl) && !/import[^;]*render\.js/.test(ctl), 'the controller decides neither what a record means nor how it is drawn: it does not apply a style itself, does not build SVG and does not import the renderer');
+  ok(['js/render/text-edit.js', 'js/ui/rendered.js', 'js/model/resolve.js', 'js/model/scene.js', 'js/model/edit-state.js', 'js/pptx/design.js'].every((f) => !/\bsetStyle\b/.test(src(f))) && !/\bsetStyle\b/.test(src('js/render/render.js').replace(/[\s\S]*async setStyle/, '').slice(100000)) && /async setStyle\(/.test(src('js/render/render.js')) && (src('js/render/render.js').match(/async setStyle\(/g) || []).length === 1, 'setStyle is defined once, in render.js, and called by the controller only: the text editor, the Rendered tab, the resolver, the scene, the edit-state and the design analysis do not mention it');
+  ok(!/exportPptx|writeXml|serialize|XMLSerializer|zip\.file|localStorage|indexedDB|fetch\(/.test(ctl), 'the controller writes no XML, exports nothing and saves nothing');
+}
+
+// ======================================================================================================
+section('Phase 3.2.6-D: style editing UI (the style bar of the Rendered tab), in the real UI');
+{
+  const P326 = path.join(FX, 'p326a-styles.pptx');
+  const ui = await ctx.newPage(); watch(ui, 'style ui: '); const kb = ui.keyboard;
+  await ui.setViewportSize({ width: 1280, height: 1000 });
+  await openRendered(ui, 'Style deck', P326);
+  const norm = (h) => h.replace(/sf([gmcf])\d+/g, 'sf$1#').replace(/blob:[^"]+/g, 'blob');
+  const settle = () => ui.waitForTimeout(200); // (a style is drawn asynchronously, a face may load first)
+  const info = (name) => ui.evaluate((n) => {
+    const root = document.querySelector('.rendered-host .sf-slide'); const node = [...root.querySelectorAll('.sf-el')].find((x) => x.dataset.name === n); if (!node) return null;
+    const r = node.querySelector('.sf-text .sf-r'); const c = r && getComputedStyle(r); const p = node.querySelector(':scope > svg.sf-geo path'); const hx = (v) => { const m = /rgba?\((\d+), (\d+), (\d+)/.exec(v || ''); return m ? [m[1], m[2], m[3]].map((q) => Number(q).toString(16).padStart(2, '0')).join('').toUpperCase() : v; };
+    return { html: node.outerHTML.replace(/sf([gmcf])\d+/g, 'sf$1#').replace(/blob:[^"]+/g, 'blob'), fill: p ? p.getAttribute('fill') : null, stroke: p ? p.getAttribute('stroke') : null, color: c ? hx(c.color) : null, size: c ? `${Math.round((parseFloat(c.fontSize) / parseFloat(getComputedStyle(root).getPropertyValue('--u'))) * 100) / 100}pt` : null, family: c ? c.fontFamily : null, weight: c ? Number(c.fontWeight) : null, fstyle: c ? c.fontStyle : null, dir: (node.querySelector('.sf-p') || {}).dir || null, lang: r ? r.lang : null, tr: node.style.getPropertyValue('translate'), tf: node.style.transform, text: node.querySelector('.sf-text') ? node.querySelector('.sf-text').textContent : null };
+  }, name);
+  const bar = () => ui.evaluate(() => { const o = {}; for (const k of ['text-color', 'size', 'font', 'bold', 'italic', 'fill', 'line', 'reset']) { const e = document.querySelector(`.sf-style-bar [data-ctl="${k}"]`); o[k] = { dis: e.disabled, v: e.value, pr: e.getAttribute('aria-pressed'), mixed: e.hasAttribute('data-mixed'), ph: e.placeholder }; } o.status = document.querySelector('.sf-sb-status').textContent; return o; });
+  const ctl = (k) => ui.locator(`.sf-style-bar [data-ctl="${k}"]`);
+  const click = async (x, y) => { await ui.mouse.click(...(await at(ui, x, y))); await ui.waitForTimeout(60); };
+  const sel = () => ui.evaluate(() => { const o = document.querySelectorAll('.rendered-host .sf-sel'); return { n: o.length, id: o[0] ? o[0].dataset.for : null, status: document.querySelector('.sf-sel-status').textContent, ce: document.querySelectorAll('[contenteditable]').length, sy: window.scrollY, slide: document.querySelector('.rendered-host .sf-slide').dataset.slide, y: document.querySelector('.rendered-host .sf-slide').getBoundingClientRect().top }; });
+  const store = () => ui.evaluate(async () => ({ ls: JSON.stringify({ ...localStorage }), dbs: ((await indexedDB.databases?.()) || []).map((d) => d.name).sort().join() }));
+  const store0 = await store();
+  const ALL = ['text-color', 'size', 'font', 'bold', 'italic', 'fill', 'line', 'reset'];
+
+  // ---- the bar: present, labelled, idle ----
+  let b = await bar(); const bh0 = await ui.evaluate(() => { const r = document.querySelector('.sf-style-bar').getBoundingClientRect(); const t = document.querySelector('.sf-sb-status').getBoundingClientRect(); return [r.height, t.height]; });
+  ok(await ui.evaluate(() => { const t = document.querySelector('.rendered-host .sf-style-bar, .rendered .sf-style-bar'); return !!t && t.getAttribute('role') === 'toolbar' && !!t.getAttribute('aria-label') && !!t.closest('.stage-wrap'); }), 'the Rendered tab has a style bar (role toolbar, with a label) in the slide column');
+  ok(ALL.every((k) => b[k].dis) && /Select a shape or line/.test(b.status), 'nothing selected: every control is disabled and the status line says how to start', b);
+  ok(await ui.evaluate(() => ['text-color', 'size', 'font', 'fill', 'line'].every((k) => { const e = document.querySelector(`.sf-style-bar [data-ctl="${k}"]`); return (e.getAttribute('aria-label') || '').length > 0; }) && [...document.querySelectorAll('.sf-style-bar button')].every((e) => (e.getAttribute('aria-label') || e.textContent).length > 0)), 'every control has an accessible name');
+
+  // ---- an element with text, fill and outline: what the bar shows ----
+  const f0 = await info('solid'); await click(300, 80); await settle();
+  b = await bar(); let s = await sel();
+  ok(s.n === 1 && !ALL.slice(0, 7).some((k) => b[k].dis) && b.reset.dis === true && b.status === '', 'selecting the shape enables every control but reset (it has no style change yet)', { s, b });
+  ok(b['text-color'].v === '#112233' && b.size.v === '20' && b.font.v === 'Arial' && b.bold.pr === 'false' && b.italic.pr === 'false' && b.fill.v === '#ff0000' && b.line.v === '#0000ff', 'the controls show what the file has: text colour #112233, 20 pt, Arial, not bold, not italic, fill #FF0000, outline #0000FF', b);
+  const bh1 = await ui.evaluate(() => { const r = document.querySelector('.sf-style-bar').getBoundingClientRect(); const t = document.querySelector('.sf-sb-status').getBoundingClientRect(); return [r.height, t.height]; });
+  ok(bh0[0] === bh1[0] && bh0[1] === bh1[1], 'the bar and its status line keep their height when the selection changes (the bar itself never moves the slide)', { bh0, bh1 });
+
+  // ---- text colour, size, font, bold, italic ----
+  await ctl('text-color').fill('#00ff00'); await settle(); let i = await info('solid'); b = await bar();
+  ok(i.color === '00FF00' && i.size === '20pt' && i.weight < 700 && b.reset.dis === false && /Style changed in the preview/.test(b.status) && /nothing is saved/.test(b.status), 'text colour: the run is green, size and weight untouched, reset is enabled, the status line says it is kept in the preview and not saved', { i, b });
+  await ctl('size').fill('30'); await ctl('size').press('Enter'); await settle(); i = await info('solid'); b = await bar();
+  ok(i.size === '30pt' && i.color === '00FF00' && b.size.v === '30', 'font size 30 + Enter: 30 pt, the colour stays', { i, b });
+  await ctl('size').fill('5000'); await ctl('size').press('Enter'); await settle(); i = await info('solid'); b = await bar();
+  ok(i.size === '30pt' && b.size.v === '30' && /between 1 and 4000/.test(b.status), 'a size out of range (5000) is refused with a message and the box goes back to 30', { i, b });
+  await ctl('size').fill(''); await ctl('size').press('Enter'); await settle(); i = await info('solid'); b = await bar();
+  ok(i.size === '20pt' && b.size.v === '20', 'an empty size box goes back to the file\'s size (20 pt)', { i, b });
+  await ctl('font').fill('Georgia'); await ctl('font').press('Enter'); await settle(); i = await info('solid'); b = await bar();
+  ok(/^Georgia, "SF Liberation Serif"/.test(i.family) && b.font.v === 'Georgia', 'font family: Georgia is drawn (with its self-hosted equivalent in the stack)', { family: i.family, b: b.font });
+  ok(await ui.evaluate(() => { const dl = document.querySelector('.sf-style-bar [data-ctl="font"]').list; return !!dl && dl.options.length >= 10 && [...dl.options].some((o) => o.value === 'Times New Roman'); }), 'the font box offers the families the renderer can draw (a datalist), and accepts any other name');
+  await ctl('font').fill('Bad"Name'); await ctl('font').press('Enter'); await settle(); i = await info('solid'); b = await bar();
+  ok(/not valid/.test(b.status) && b.font.v === 'Georgia' && /^Georgia/.test(i.family), 'a font name the edit-state refuses (a quote) is reported ("not valid"), nothing changes and the box shows the font in use again', { status: b.status, font: b.font.v });
+  await ctl('font').fill(''); await ctl('font').press('Enter'); await settle(); i = await info('solid');
+  ok(/^Arial/.test(i.family), 'an empty font box goes back to the file\'s font (Arial)', i.family);
+  await ctl('bold').click(); await settle(); i = await info('solid'); b = await bar();
+  ok(i.weight >= 700 && b.bold.pr === 'true', 'bold: the text is bold and the button is pressed', { i, b: b.bold });
+  await ctl('bold').click(); await settle(); i = await info('solid'); b = await bar();
+  ok(i.weight < 700 && b.bold.pr === 'false', 'bold again: back to normal (the style equal to the file\'s is not kept)', { i, b: b.bold });
+  await ctl('italic').click(); await settle(); i = await info('solid'); b = await bar();
+  ok(i.fstyle === 'italic' && b.italic.pr === 'true', 'italic: italic text and a pressed button', { i, b: b.italic });
+
+  // ---- fill and outline ----
+  await ctl('fill').fill('#0000ff'); await settle(); i = await info('solid');
+  ok(i.fill === '#0000FF' && i.stroke === '#0000FF', 'fill: the shape is filled #0000FF, the outline is the file\'s', i);
+  await ctl('line').fill('#ffff00'); await settle(); i = await info('solid'); b = await bar();
+  ok(i.stroke === '#FFFF00' && i.fill === '#0000FF' && b.fill.v === '#0000ff' && b.line.v === '#ffff00', 'outline: the outline is #FFFF00, the fill stays', { i, b });
+
+  // ---- selection, move, resize keep working on a styled element ----
+  s = await sel(); const sy0 = s.sy;
+  ok(s.n === 1 && /Selected: Shape “solid”/.test(s.status) && s.sy === 0, 'the element is still selected after all of this (one outline, status line unchanged in kind), the page did not scroll', s);
+  const drag = async (from, to) => { const [x1, y1] = await at(ui, ...from); const [x2, y2] = await at(ui, ...to); await ui.mouse.move(x1, y1); await ui.mouse.down(); await ui.mouse.move(x2, y2, { steps: 6 }); await ui.mouse.up(); await settle(); };
+  const before = await info('solid'); await drag([300, 80], [360, 120]); i = await info('solid'); b = await bar(); s = await sel();
+  ok(/calc/.test(i.tr) && i.fill === '#0000FF' && i.stroke === '#FFFF00' && i.fstyle === 'italic' && i.color === '00FF00' && !b['text-color'].dis && /Moved in the preview by/.test(s.status), 'a real drag moves the styled element: moved, style (fill, outline, italic, colour) kept, the bar still enabled', { i, s: s.status });
+  const hd = await ui.evaluate(() => { const r = document.querySelector('.rendered-host .sf-sel .sf-hdl[data-h="se"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await ui.mouse.move(hd.x, hd.y); await ui.mouse.down(); await ui.mouse.move(hd.x + 40, hd.y + 20, { steps: 6 }); await ui.mouse.up(); await settle(); i = await info('solid'); s = await sel();
+  ok(/scale\(/.test(i.tf) && /calc/.test(i.tr) && i.fill === '#0000FF' && i.color === '00FF00' && /Resized in the preview/.test(s.status), 'a real resize of the styled element: resized, still moved, style kept', { i: { tf: i.tf, tr: i.tr, fill: i.fill }, st: s.status });
+  const edited = await bar(); ok(!edited['text-color'].dis && edited.reset.dis === false, 'the bar is still live after the drag and the resize');
+
+  // ---- reset ----
+  await ctl('reset').click(); await settle(); i = await info('solid'); b = await bar();
+  ok(i.fill === '#FF0000' && i.stroke === '#0000FF' && i.color === '112233' && i.size === '20pt' && i.fstyle === 'normal' && /^Arial/.test(i.family) && /calc/.test(i.tr) && /scale\(/.test(i.tf), 'Reset style: fill, outline, colour, size, font, italic are the file\'s again; the move and the resize are NOT undone', i);
+  ok(b.reset.dis === true && b['text-color'].v === '#112233' && b.size.v === '20' && b.font.v === 'Arial' && b.italic.pr === 'false' && b.fill.v === '#ff0000', 'and the controls show the file\'s values again, reset is disabled', b);
+
+  // ---- text editing: the bar ends the edit, keeps the typed text ----
+  await openRendered(ui, 'Style deck 2', P326);
+  await click(300, 80); await ui.mouse.dblclick(...(await at(ui, 300, 80))); await ui.waitForTimeout(80);
+  ok((await sel()).ce === 1, 'double click on the shape starts text edit mode (unchanged behaviour)');
+  ok(await ui.evaluate(() => { const i = document.querySelector('.sf-text-editing'); if (!i) return false; const p = i.children[0]; const rg = document.createRange(); rg.selectNodeContents(p); rg.collapse(false); const g = getSelection(); g.removeAllRanges(); g.addRange(rg); return true; }), 'caret placed at the end of the text');
+  await kb.insertText('!'); b = await bar();
+  ok(!b['text-color'].dis && !b.bold.dis, 'the bar stays enabled while the text is being edited');
+  await ctl('bold').click(); await settle(); i = await info('solid'); s = await sel();
+  ok(s.ce === 0 && i.text === 'Plain!' && i.weight >= 700, 'bold while editing: the edit ends, the typed text is KEPT ("Plain!"), the text is bold, no contenteditable is left', { s, i: { text: i.text, w: i.weight } });
+  ok(/Selected: Shape “solid”/.test(s.status) && s.n === 1, 'and the element is still selected');
+  await ctl('text-color').fill('#ff00ff'); await settle(); i = await info('solid');
+  ok(i.text === 'Plain!' && i.color === 'FF00FF' && i.weight >= 700, 'a second style change keeps the edited text and the first change', i);
+  await ctl('reset').click(); await settle(); i = await info('solid');
+  ok(i.text === 'Plain!' && i.color === '112233' && i.weight < 700, 'Reset style takes the style off and keeps the text edit', i);
+
+  // ---- keys typed in the bar stay in the bar ----
+  await ui.evaluate(() => { globalThis.__keys = 0; const d = document.querySelector('dialog') || document.querySelector('.modal'); document.addEventListener('keydown', () => { globalThis.__keys++; }); void d; });
+  await ctl('font').focus(); await ctl('font').fill(''); await kb.type('Cal'); await kb.press('ArrowLeft'); await kb.press('ArrowRight'); await kb.press('ArrowUp');
+  const keysInBar = await ui.evaluate(() => globalThis.__keys); const sl1 = (await sel()).slide; await ctl('font').fill(''); await ctl('font').press('Enter'); await settle(); await ui.evaluate(() => { globalThis.__keys = 0; });
+  await ui.locator('.rendered .film-item').nth(0).focus(); await kb.press('ArrowRight'); const keysOutside = await ui.evaluate(() => globalThis.__keys);
+  ok(keysInBar === 0 && keysOutside > 0, 'keys typed in the bar (letters, arrows) never reach the dialog\'s slide navigation (the same keys on the filmstrip do: control)', { keysInBar, keysOutside, sl1 });
+  await click(300, 80); await ctl('size').fill('41'); await kb.press('Escape'); await settle(); // (a click on the slide while a box holds an uncommitted value: the Escape put it back)
+  ok(await ui.evaluate(() => !!document.querySelector('dialog[open], .modal')) && (await bar()).size.v === '20', 'Escape in the size box puts the value back and does not close the dialog', await bar());
+
+  // ---- RTL ----
+  await click(650, 435); await settle(); const r0 = await info('rtl'); b = await bar();
+  ok(b['text-color'].v === '#334455' && b.size.v === '24' && !b['text-color'].dis, 'RTL shape selected: the bar shows its colour #334455 and 24 pt', b);
+  await ctl('text-color').fill('#ff0000'); await ctl('italic').click(); await ctl('font').fill('Georgia'); await ctl('font').press('Enter'); await settle(); const r1 = await info('rtl');
+  ok(r1.dir === 'rtl' && !!r0.lang && r1.lang === r0.lang, 'RTL: the paragraph direction and the language are kept', { dir: r1.dir, lang: r1.lang, was: [r0.dir, r0.lang] });
+  ok(r1.color === 'FF0000' && r1.fstyle === 'italic' && /^Georgia, "SF Liberation Serif", "Noto Naskh Arabic", "Noto Sans Arabic", "SF DejaVu Sans"/.test(r1.family) && r1.text === r0.text, 'RTL: colour, italic and the family are applied, the Arabic fallbacks follow the new family, the text is the same', { c: r1.color, f: r1.family });
+  await ctl('reset').click(); await settle();
+  ok((await info('rtl')).html === r0.html, 'RTL: Reset style gives the exact original element again', null);
+
+  // ---- mixed runs, a line, things that cannot be styled ----
+  await click(100, 320); await settle(); b = await bar();
+  ok(b.size.v === '' && b.size.ph === 'Mixed' && b.bold.pr === 'mixed' && b['text-color'].mixed, 'a text box with mixed runs shows Mixed (empty size box, mixed bold, dashed colour), not one run\'s value', b);
+  await ctl('size').fill('18'); await ctl('size').press('Enter'); await settle();
+  ok(await ui.evaluate(() => (() => { const u = parseFloat(getComputedStyle(document.querySelector('.rendered-host .sf-slide')).getPropertyValue('--u')); return [...[...document.querySelectorAll('.rendered-host .sf-el')].find((x) => x.dataset.name === 'mixed').querySelectorAll('.sf-r')].every((r) => Math.abs(parseFloat(getComputedStyle(r).fontSize) / u - 18) < 0.05); })()), 'setting a size on mixed runs sets every run');
+  await ctl('reset').click(); await settle();
+  await click(650, 270); await settle(); b = await bar(); s = await sel();
+  ok(/“conn”/.test(s.status) && b.line.dis === false && b.fill.dis === true && b['text-color'].dis && b.size.dis && b.font.dis && b.bold.dis && b.italic.dis, 'a connector line: only the outline colour is enabled (no fill, no text)', { s: s.status, b });
+  await ctl('line').fill('#123456'); await settle();
+  ok((await info('conn')).stroke === '#123456', 'the connector\'s outline colour changes');
+  await ctl('reset').click(); await settle();
+  await click(540, 360); await settle(); b = await bar(); s = await sel();
+  ok(/Picture/.test(s.status) && ALL.every((k) => b[k].dis) && /cannot be styled/.test(b.status), 'a picture: everything is disabled and the status line says it cannot be styled', { s: s.status, b: b.status });
+  await click(750, 360); await settle(); b = await bar(); s = await sel();
+  ok(/Table/.test(s.status) && ALL.every((k) => b[k].dis), 'a table: everything is disabled');
+  await click(900, 500); await settle(); b = await bar();
+  ok((await sel()).n === 0 && ALL.every((k) => b[k].dis) && /Select a shape or line/.test(b.status), 'clicking empty space clears the selection: the bar is idle again');
+  await click(60, 420); await settle(); b = await bar();
+  ok(!b.fill.dis && !b['text-color'].dis, 'a shape inside a group can be styled');
+  await ctl('fill').fill('#654321'); await settle();
+  ok((await info('grpchild')).fill === '#654321', 'and its fill changes');
+  await ctl('reset').click(); await settle();
+  // a shape with no fill and no outline: the outline has nothing to recolour
+  await click(300, 170); await settle(); b = await bar();
+  ok(b.line.dis === true && b.fill.dis === false && b.fill.mixed === true, 'a shape with no fill and no outline: the outline is disabled, the fill box is marked as not a solid colour');
+  // a gradient fill is replaced by the chosen colour and comes back with Reset
+  await click(300, 250); await settle(); const g0 = await info('grad'); await ctl('fill').fill('#0000ff'); await settle(); const g1 = await info('grad');
+  await ctl('reset').click(); await settle(); const g2 = await info('grad');
+  ok(g1.fill === '#0000FF' && !/url\(#/.test(g1.html) && g2.html === g0.html && /linearGradient/.test(g2.html), 'a gradient is replaced by the chosen colour; Reset style brings the exact gradient back', { g0f: g0.fill, g1f: g1.fill, g1g: /url\(#/.test(g1.html), same: g2.html === g0.html, lg: /linearGradient/.test(g2.html) });
+
+  // ---- the details of the slide follow a style change ----
+  await click(600, 90); await settle(); const d0 = await ui.evaluate(() => document.querySelector('.rendered .details').textContent);
+  await ctl('size').fill('50'); await ctl('size').press('Enter'); await settle(); const d1 = await ui.evaluate(() => document.querySelector('.rendered .details').textContent);
+  await ui.click('role=tab[name="Slides"]'); await ui.click('role=tab[name="Rendered"]'); await ui.waitForSelector('.rendered-host .sf-slide .sf-el'); await settle(); const d1b = await ui.evaluate(() => document.querySelector('.rendered .details').textContent);
+  await ui.click('.rendered .film-item >> nth=0'); await settle(); await ui.waitForTimeout(200); const d1c = await ui.evaluate(() => document.querySelector('.rendered .details').textContent);
+  ok(/text overflows/.test(d1c), 'the slide drawn again from the filmstrip: its details still list that note (the restored style is drawn again and the scene keeps its notes)', d1c.length);
+  await ctl('reset').click(); await settle(); const d2 = await ui.evaluate(() => document.querySelector('.rendered .details').textContent);
+  ok(!/text overflows/.test(d0) && /text overflows/.test(d1) && !/text overflows/.test(d2), 'the slide\'s details list the fit note a style change causes (text too big for its frame) and drop it again on reset', { d0: d0.length, d1: d1.length, d2: d2.length });
+  ok(/text overflows/.test(d1b), 'drawn again (another tab and back) the details list that note too', d1b.length);
+
+  // ---- nothing is saved ----
+  const store1 = await store();
+  ok(store1.ls === store0.ls && store1.dbs === store0.dbs, 'style changes wrote nothing to localStorage and created no IndexedDB database', { store0, store1 });
+  await ui.close();
+
+  // ---- another slide and back, and another tab and back (3 slides: p321-selection) ----
+  const u2 = await ctx.newPage(); watch(u2, 'style nav: '); await u2.setViewportSize({ width: 1280, height: 1000 });
+  await openRendered(u2, 'Style nav deck', SEL);
+  const fillOf = (n) => u2.evaluate((nm) => { const el = [...document.querySelectorAll('.rendered-host .sf-el')].find((x) => x.dataset.name === nm); const p = el && el.querySelector(':scope > svg.sf-geo path'); return p ? p.getAttribute('fill') : null; }, n);
+  await u2.mouse.click(...(await at(u2, 450, 300))); await u2.waitForTimeout(60);
+  const nm0 = await u2.evaluate(() => document.querySelector('.sf-sel-status').textContent);
+  const target = (nm0.match(/“([^”]+)”/) || [])[1]; const a0 = await fillOf(target);
+  await u2.locator('.sf-style-bar [data-ctl="fill"]').fill('#00ff00'); await u2.waitForTimeout(200);
+  ok(target && (await fillOf(target)) === '#00FF00' && a0 !== '#00FF00', 'slide 1: a shape is selected and its fill is changed through the bar', { target, a0 });
+  await u2.click('.rendered .film-item >> nth=1'); await u2.waitForSelector('.rendered-host .sf-slide[data-slide="1"] .sf-el'); await u2.waitForTimeout(200);
+  const bs = await u2.evaluate(() => ({ dis: [...document.querySelectorAll('.sf-style-bar [data-ctl]')].every((e) => e.disabled), st: document.querySelector('.sf-sb-status').textContent }));
+  ok(bs.dis && /Select a shape or line/.test(bs.st), 'another slide: nothing is selected there and the bar is idle');
+  await u2.click('.rendered .film-item >> nth=0'); await u2.waitForSelector('.rendered-host .sf-slide[data-slide="0"] .sf-el'); await u2.waitForTimeout(250);
+  ok((await fillOf(target)) === '#00FF00', 'and back: the style change is drawn again (kept in the edit-state)');
+  await u2.mouse.click(...(await at(u2, 450, 300))); await u2.waitForTimeout(80);
+  const back = await u2.evaluate(() => ({ fill: document.querySelector('.sf-style-bar [data-ctl="fill"]').value, reset: document.querySelector('.sf-style-bar [data-ctl="reset"]').disabled }));
+  ok(back.fill === '#00ff00' && back.reset === false, 'selecting it again: the bar shows the changed fill and reset is enabled', back);
+  await u2.click('role=tab[name="Slides"]'); await u2.click('role=tab[name="Rendered"]'); await u2.waitForSelector('.rendered-host .sf-slide .sf-el'); await u2.waitForTimeout(250);
+  ok((await fillOf(target)) === '#00FF00', 'another tab and back: still drawn');
+  // leaving a slide: the bar is idle at once (read in the same tick, before the next slide is drawn)
+  await u2.mouse.click(...(await at(u2, 450, 300))); await u2.waitForTimeout(60);
+  const idleNow = await u2.evaluate(() => { document.querySelectorAll('.rendered .film-item')[1].click(); return [...document.querySelectorAll('.sf-style-bar [data-ctl]')].every((e) => e.disabled); });
+  ok(idleNow, 'leaving a slide: the bar is idle at once, before the next slide is drawn (it never acts on the old slide)');
+  await u2.close();
+
+  // ---- static guards ----
+  const src = (f) => readFileSync(path.join(ROOT, f), 'utf8'); const code = (f) => src(f).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const sb = code('js/ui/style-bar.js'); const rd = code('js/ui/rendered.js');
+  ok(/sel\.style\(/.test(sb) && !/commitStyle|discardStyle|discard\(|clear\(\)|commitText|commit\(|commitResize|setStyle|setText/.test(sb), 'the style bar changes styles only through controller.style(): it never calls the edit-state\'s commit / discard methods nor the renderer');
+  ok(/effectiveStyle|effectiveStyledText|hasStyle/.test(sb) && !/createEditState|editStateOf/.test(sb), 'the style bar only READS the edit-state (effectiveStyle, effectiveStyledText, hasStyle)');
+  ok(!/innerHTML|outerHTML|insertAdjacentHTML|\beval\(|new Function|setAttribute\(\s*['"]style|cssText|\.style\./.test(sb) && !/localStorage|sessionStorage|indexedDB|fetch\(|XMLHttpRequest|serialize|XMLSerializer|\.zip\b|\.doc\b/.test(sb), 'style-bar.js uses no HTML string, inline style, storage, network, XML or zip access (CSP: style-src \'self\')');
+  ok(!/\bsetStyle\b|commitStyle|discardStyle/.test(rd), 'rendered.js only wires the bar: it does not touch the style API');
+  ok(/\.sf-style-bar/.test(src('css/styles.css')) && !/\sstyle=/.test(sb), 'the bar\'s look is static CSS in css/styles.css');
+}
+
+// ======================================================================================================
+section('Phase 3.2.6-E: integration audit (upload -> select -> text edit -> style -> move -> resize -> navigate -> return -> tab away -> reset), in the real UI');
+{
+  const P326 = path.join(FX, 'p326a-styles.pptx');
+  const ui = await ctx.newPage(); watch(ui, 'audit E: '); await ui.setViewportSize({ width: 1280, height: 1000 });
+  await openRendered(ui, 'Audit E deck', SEL);
+  const settle = () => ui.waitForTimeout(250);
+  const ctl = (k) => ui.locator(`.sf-style-bar [data-ctl="${k}"]`);
+  const click = async (x, y) => { await ui.mouse.click(...(await at(ui, x, y))); await ui.waitForTimeout(80); };
+  const drag = async (from, to) => { const [x1, y1] = await at(ui, ...from); const [x2, y2] = await at(ui, ...to); await ui.mouse.move(x1, y1); await ui.mouse.down(); await ui.mouse.move(x2, y2, { steps: 6 }); await ui.mouse.up(); await settle(); };
+  const film = (i) => ui.locator('.rendered .film-item').nth(i);
+  const snap = (n) => ui.evaluate((n) => {
+    const root = document.querySelector('.rendered-host .sf-slide'); const R = root.getBoundingClientRect(); const k = 960 / R.width;
+    const node = [...root.querySelectorAll('.sf-el')].find((x) => x.dataset.name === n); if (!node) return null;
+    const r = node.getBoundingClientRect(); const run = node.querySelector('.sf-text .sf-r'); const c = run && getComputedStyle(run); const o = root.querySelector('.sf-sel'); const ob = o && o.getBoundingClientRect(); const p = node.querySelector(':scope > svg.sf-geo path');
+    const hx = (v) => { const m = /rgba?\((\d+), (\d+), (\d+)/.exec(v || ''); return m ? [m[1], m[2], m[3]].map((q) => Number(q).toString(16).padStart(2, '0')).join('').toUpperCase() : v; };
+    return { box: [Math.round((r.left - R.left) * k), Math.round((r.top - R.top) * k), Math.round(r.width * k), Math.round(r.height * k)].join(','), text: (node.querySelector('.sf-text') || {}).textContent, bold: c ? Number(c.fontWeight) >= 700 : null, italic: c ? c.fontStyle === 'italic' : null, color: c ? hx(c.color) : null, family: c ? c.fontFamily : null,
+      size: c ? Math.round(parseFloat(c.fontSize) / parseFloat(getComputedStyle(root).getPropertyValue('--u'))) : null, fill: p ? p.getAttribute('fill') : null, ovl: ob ? Math.round(Math.max(Math.abs(ob.left - r.left), Math.abs(ob.top - r.top), Math.abs(ob.right - r.right), Math.abs(ob.bottom - r.bottom))) : null };
+  }, n);
+  const page_ = () => ui.evaluate(() => ({ slides: document.querySelectorAll('.rendered-host .sf-slide').length, sel: document.querySelectorAll('.rendered-host .sf-sel').length, ce: document.querySelectorAll('[contenteditable]').length, cur: [...document.querySelectorAll('.rendered .film-item')].findIndex((b) => b.getAttribute('aria-current') === 'true'), idle: [...document.querySelectorAll('.sf-style-bar [data-ctl]')].every((e) => e.disabled), status: document.querySelector('.sf-sel-status').textContent, bar: Object.fromEntries(['text-color', 'size', 'font', 'bold', 'italic', 'reset'].map((k) => { const e = document.querySelector(`.sf-style-bar [data-ctl="${k}"]`); return [k, e.value || e.getAttribute('aria-pressed')]; })) }));
+  const store = () => ui.evaluate(async () => ({ ls: JSON.stringify({ ...localStorage }), dbs: ((await indexedDB.databases?.()) || []).map((d) => d.name).sort().join() }));
+  let g = await page_(); const file1 = await snap('textbox'); const store0 = await store();
+  ok(g.slides === 1 && g.sel === 0 && g.idle && /Nothing selected/.test(g.status) && file1.text === 'Label' && !file1.bold && file1.size === 18, 'upload -> Rendered: one slide, nothing selected, the bar idle, the file\'s values on screen', { g, file1 });
+
+  // select -> text edit (caret at the end, type) -> bold from the bar ends the edit and keeps the text
+  await click(100, 320); await settle(); await ui.mouse.dblclick(...(await at(ui, 100, 320))); await ui.waitForTimeout(100);
+  await ui.evaluate(() => { const i = document.querySelector('.sf-text-editing'); const p = i.children[0]; const rg = document.createRange(); rg.selectNodeContents(p); rg.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(rg); });
+  await ui.keyboard.insertText('X'); await ctl('bold').click(); await settle();
+  let t = await snap('textbox'); g = await page_();
+  ok(t.text === 'LabelX' && t.bold && g.ce === 0 && g.sel === 1 && t.ovl <= 1, 'text edit then Bold from the bar: text "LabelX" kept, bold, edit ended, still selected, outline on the element', { t, g });
+  await ctl('text-color').fill('#00aa00'); await ctl('size').fill('30'); await ctl('size').press('Enter'); await ctl('font').fill('Georgia'); await ctl('font').press('Enter'); await settle();
+  t = await snap('textbox');
+  ok(t.color === '00AA00' && t.size === 30 && /^Georgia/.test(t.family) && t.bold && t.text === 'LabelX', 'colour, size and font on top of the edited text: all kept together', t);
+
+  // move, then resize (real mouse): style and text survive both, the outline follows
+  await drag([100, 320], [160, 360]); const moved = await snap('textbox');
+  ok(moved.box === '120,340,130,40' && moved.color === '00AA00' && moved.size === 30 && moved.text === 'LabelX' && moved.ovl <= 1, 'move: the styled, edited element moved by (60, 40) with style and text intact', moved);
+  const hd = await ui.evaluate(() => { const r = document.querySelector('.rendered-host .sf-sel .sf-hdl[data-h="se"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await ui.mouse.move(hd.x, hd.y); await ui.mouse.down(); await ui.mouse.move(hd.x + 40, hd.y + 20, { steps: 6 }); await ui.mouse.up(); await settle();
+  const sized = await snap('textbox'); const [, , w1, h1] = sized.box.split(',').map(Number);
+  ok(w1 > 130 && h1 > 40 && sized.box.startsWith('120,340,') && sized.color === '00AA00' && sized.size === 30 && sized.bold && sized.ovl <= 1, 'resize: bigger, same top-left corner, style kept, outline aligned', sized);
+
+  // navigate: slide 2 gets its own style; the bar is idle at once while the slide changes
+  await ui.evaluate(() => { document.querySelectorAll('.rendered .film-item')[1].click(); });
+  ok(await ui.evaluate(() => [...document.querySelectorAll('.sf-style-bar [data-ctl]')].every((e) => e.disabled)), 'leaving slide 1: the bar is idle at once'); await settle();
+  g = await page_(); ok(g.slides === 1 && g.sel === 0 && g.cur === 1 && g.idle, 'slide 2: one slide, nothing selected, the bar idle', g);
+  await click(500, 120); await settle(); await ctl('font').fill('Georgia'); await ctl('font').press('Enter'); await ctl('italic').click(); await settle();
+  const s2 = await snap('s2-text'); ok(s2.italic && /^Georgia/.test(s2.family) && s2.text === 'Second slide', 'slide 2: its own element styled (Georgia, italic)', s2);
+
+  // return: everything of slide 1 is still there, nothing is selected, the bar idle
+  await film(0).click(); await settle(); t = await snap('textbox'); g = await page_();
+  ok(t.box === sized.box && t.color === '00AA00' && t.size === 30 && t.bold && /^Georgia/.test(t.family) && t.text === 'LabelX' && g.sel === 0 && g.idle && g.slides === 1, 'back on slide 1: text, style, position and size all kept; nothing selected, the bar idle', { t, g });
+  await click(160, 360); await settle(); g = await page_(); t = await snap('textbox');
+  ok(g.sel === 1 && !g.idle && g.bar.size === '30' && g.bar['text-color'] === '#00aa00' && g.bar.bold === 'true' && g.bar.font === 'Georgia' && !(await ctl('reset').isDisabled()) && t.ovl <= 1, 'selecting it again: the bar shows the styled values (30, #00aa00, bold, Georgia), reset is enabled', g);
+
+  // another tab and back: the same slide, the same element selected, the same style
+  await ui.click('role=tab[name="Slides"]'); await settle(); await ui.click('role=tab[name="Rendered"]'); await settle();
+  t = await snap('textbox'); g = await page_();
+  ok(g.cur === 0 && g.sel === 1 && /textbox/.test(g.status) && t.box === sized.box && t.color === '00AA00' && g.bar.size === '30' && g.slides === 1, 'Slides tab and back: same slide, element still selected, style and place kept, bar in sync', { t, g });
+
+  // reset: the element's style goes (text edit, move and resize stay); the other slide's style stays
+  await ctl('reset').click(); await settle(); t = await snap('textbox'); g = await page_();
+  ok(t.color === file1.color && t.size === 18 && !t.bold && t.italic === file1.italic && t.text === 'LabelX' && t.box === sized.box, 'Reset style: file colour / size / weight back, the edited text and the moved + resized box kept', { t, g });
+  ok((await ctl('reset').isDisabled()) && g.bar.size === '18', 'and the bar shows the file values with reset disabled again', g);
+  await film(1).click(); await settle(); const s2b = await snap('s2-text');
+  ok(s2b.italic && /^Georgia/.test(s2b.family), 'reset is per element: the other slide\'s style is still there');
+  await film(0).click(); await settle();
+
+  // typed but not committed (no Enter) when the person goes elsewhere: it lands on the element it was typed for
+  await click(160, 360); await settle(); await ctl('size').click(); await ctl('size').fill('40');
+  await film(1).click(); await settle(); await film(0).click(); await settle();
+  ok((await snap('textbox')).size === 40, 'a size typed (no Enter) then a click on another slide: kept for the element it was typed for');
+  await click(160, 360); await settle(); await ctl('size').click(); await ctl('size').fill('44');
+  await ui.click('role=tab[name="Slides"]'); await settle(); await ui.click('role=tab[name="Rendered"]'); await settle();
+  ok((await snap('textbox')).size === 44, 'a size typed (no Enter) then another tab: kept as well');
+
+  // a style change and a slide change in the same tick: the style is kept, nothing is left behind
+  await click(350, 240); await settle(); const fill0 = (await snap('front-rect')).fill;
+  await ui.evaluate(() => { const i = document.querySelector('.sf-style-bar [data-ctl="fill"]'); i.value = '#123456'; i.dispatchEvent(new Event('input', { bubbles: true })); document.querySelectorAll('.rendered .film-item')[1].click(); });
+  await settle(); await settle(); g = await page_(); const bst = await ui.evaluate(() => document.querySelector('.sf-sb-status').textContent);
+  ok(g.slides === 1 && g.sel === 0 && g.ce === 0 && g.idle && g.cur === 1 && /Select a shape or line/.test(bst), 'style + slide change in one tick: one slide, no outline, no editor, bar idle, and its status line is the new slide\'s (the late result of the old change says nothing)', { g, bst });
+  await film(0).click(); await settle(); const fill1 = (await snap('front-rect')).fill;
+  ok(fill0 !== '#123456' && fill1 === '#123456', 'and the fill was kept for the element it was meant for', { fill0, fill1 });
+
+  // nothing written anywhere (the template itself was saved by the upload step, before store0)
+  const st1 = await store(); ok(st1.ls === store0.ls && st1.dbs === store0.dbs, 'the whole flow wrote nothing to localStorage or IndexedDB', { a: store0.ls.length, b: st1.ls.length });
+
+  // close and reopen the same template, then another template: nothing carries over, no listener is left on document / window
+  await ui.evaluate(() => {
+    const net = new Map(); globalThis.__net = net;
+    for (const T of [document, window]) { const nm = T === document ? 'doc' : 'win'; const add = T.addEventListener.bind(T); const rem = T.removeEventListener.bind(T); T.addEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) + 1); return add(a, f, o); }; T.removeEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) - 1); return rem(a, f, o); }; }
+  });
+  await ui.click('.modal [aria-label="Close"]'); await settle();
+  const netNow = () => ui.evaluate(() => [...globalThis.__net].filter(([, v]) => v !== 0).map(([k, v]) => `${k}=${v}`).join());
+  const net0 = await netNow();
+  const reopen = async (name) => { await ui.click(`.tpl:has-text("${name}") >> text=Preview`); await ui.waitForSelector('.film-item'); await ui.click('role=tab[name="Rendered"]'); await ui.waitForSelector('.rendered-host .sf-slide .sf-el'); await settle(); };
+  await reopen('Audit E deck'); const re = await snap('textbox'); g = await page_(); const netOpen = await netNow();
+  ok(re.text === 'Label' && re.size === 18 && !re.bold && re.box === file1.box && g.sel === 0 && g.idle, 'reopened: the deck is the file again (edits live only while the deck is open), nothing selected', { re, g });
+  await click(100, 320); await ui.mouse.dblclick(...(await at(ui, 100, 320))); await ui.waitForTimeout(100); await ui.keyboard.insertText('z'); await ctl('bold').click(); await settle(); await drag([100, 320], [130, 340]);
+  await ctl('size').click(); await ctl('size').fill('33'); await ui.click('.modal [aria-label="Close"]'); await settle();
+  ok(await netNow() === net0, 'open, edit, style, close with a typed value: no listener is left on document or window', { net0, now: await netNow() });
+  await reopen('Audit E deck'); ok((await snap('textbox')).text === 'Label', 'closing with a typed value does not leak it into the next opening');
+  // tab away while the text is being edited, then close the dialog while it is being edited
+  await click(100, 320); await ui.mouse.dblclick(...(await at(ui, 100, 320))); await ui.waitForTimeout(100); await ui.keyboard.insertText('W');
+  await ui.click('role=tab[name="Slides"]'); await settle(); const netHidden = await netNow(); await ui.click('role=tab[name="Rendered"]'); await settle(); g = await page_(); t = await snap('textbox');
+  ok(netHidden === netOpen, 'while another tab is shown the ended edit holds no listener on document or window', { netOpen, netHidden });
+  ok(t.text === 'W' && g.ce === 0 && g.sel === 1 && g.slides === 1, 'Slides tab while the text is being edited: the edit ends, the typed text is kept in memory (as for every exit but Escape), no editor is left, the element stays selected', { t: t.text, g });
+  await click(100, 320); await ui.mouse.dblclick(...(await at(ui, 100, 320))); await ui.waitForTimeout(100); await ui.keyboard.insertText('V');
+  await ui.click('.modal [aria-label="Close"]'); await settle();
+  ok(await netNow() === net0, 'closing the dialog while the text is being edited leaves no listener on document or window', { net0, now: await netNow() });
+  await reopen('Audit E deck'); ok((await snap('textbox')).text === 'Label' && (await page_()).ce === 0, 'and the next opening is the file again, with no editor');
+  await ui.click('.modal [aria-label="Close"]'); await settle();
+  await ui.click('text=Templates >> nth=0'); await ui.waitForSelector('.dropzone');
+  const [fc] = await Promise.all([ui.waitForEvent('filechooser'), ui.click('.dropzone')]); await fc.setFiles(P326);
+  await ui.waitForSelector('.modal #tpl-name'); await ui.fill('#tpl-name', 'Audit E deck 2'); await ui.click('.modal >> text=Save to library');
+  await ui.waitForFunction(() => [...document.querySelectorAll('.tpl h3')].some((x) => x.textContent === 'Audit E deck 2')); await reopen('Audit E deck 2');
+  g = await page_(); ok(g.slides === 1 && g.sel === 0 && g.idle && (await snap('solid')).size === 20 && (await snap('solid')).color === '112233', 'a second deck opens clean: file values only, nothing from the first deck');
+  await ui.close();
 }
 
 // ======================================================================================================

@@ -549,7 +549,7 @@ section('Rendered tab: real UI flow (upload, preview, tabs)');
   const slidesBefore = await ui.locator('.slide .shp').count();
   await ui.click('role=tab[name="Rendered"]');
   await ui.waitForSelector('.rendered-host .sf-slide .sf-el');
-  const info = await ui.evaluate(() => { const r = document.querySelector('.rendered-host .sf-slide'); const f = document.querySelector('.sf-frame'); return { w: r.getBoundingClientRect().width, fw: f.clientWidth, els: r.querySelectorAll('.sf-el').length, text: r.querySelectorAll('.sf-text').length, canvas: document.querySelectorAll('canvas').length, editable: document.querySelectorAll('.rendered [contenteditable], .rendered input, .rendered textarea, .rendered button[type=submit]').length, aria: r.getAttribute('aria-label') }; });
+  const info = await ui.evaluate(() => { const r = document.querySelector('.rendered-host .sf-slide'); const f = document.querySelector('.sf-frame'); return { w: r.getBoundingClientRect().width, fw: f.clientWidth, els: r.querySelectorAll('.sf-el').length, text: r.querySelectorAll('.sf-text').length, canvas: document.querySelectorAll('canvas').length, editable: [...document.querySelectorAll('.rendered [contenteditable], .rendered input, .rendered textarea, .rendered button[type=submit]')].filter((n) => !n.closest('.sf-style-bar')).length, aria: r.getAttribute('aria-label') }; });
   ok(info.els >= 2 && info.text >= 1 && info.canvas === 0, 'Rendered tab draws the slide as native elements', info);
   ok(Math.abs(info.w - info.fw) <= 1, 'the rendered slide fills its frame', info);
   ok(info.editable === 0, 'the tab is read-only: no inputs, no contenteditable, no save controls', info);

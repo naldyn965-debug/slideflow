@@ -74,6 +74,17 @@
 // for that element: no handles, no drag, no resize, the pointer belongs to the text (a press on it keeps the caret). A press anywhere else, select(), clear(), reset(), dispose() or Escape ends the mode and the
 // ORIGINAL text DOM is put back; the draft is kept (handed to edits.commitText, the text box drawn again from the edit-state) on every exit except Escape, a structure violation and reset(), and is drawn again
 // with the slide on every redraw, like the moves and resizes. Never written to the scene or the XML; this file asks text-edit.js, it does not touch the text itself.
+//
+// STYLES (Phase 3.2.6-C). With an `edits` option this controller is the one place that connects the edit-state's style records (3.2.6-A) to the renderer's handle.setStyle (3.2.6-B): it asks the edit-state what a record is
+// and asks the renderer to draw it, and decides neither. Nothing is written to the scene or the XML, nothing is exported, there is no control and no undo (all later stages).
+//   - style(id, patch) (async) commits the patch to the edit-state (commitStyle) and draws the element's record; it resolves to the commit's result plus { drawn, stale }. A commit that is refused or changes nothing draws nothing.
+//     Text edit mode ends first (reason 'style'; its draft is kept like on any exit but Escape) because the draw replaces the text box under the caret.
+//   - A controller attached to the slide again (a redraw, another slide and back, another tab and back) draws the committed style records of its slide, after the committed moves, resizes and texts: `ready` resolves when
+//     they are drawn. The records are drawn from the edit-state, never from a copy kept here.
+//   - reset() forgets the style records of the slide with the other committed edits and puts the file's style back (before, a record was only forgotten for an element that was moved, by discard(), and never redrawn).
+//   - Stale draws: every draw of an element is numbered, and the renderer drops an older draw that finishes after a newer one (or after reset()): that draw resolves with `stale: true` and has drawn nothing. While a style is
+//     being drawn text edit mode is refused ('style-pending'): the draw would replace the text box the session holds.
+//   - dispose() leaves drawn styles as they are, like drawn texts (they are the drawn slide's, not this controller's); the next controller draws them again from the edit-state.
 import { MIN_PT, FLAT_PT, MAX_TIMES, SAME_PT } from '../model/resize-limits.js';
 import { textEditability, startTextEdit } from './text-edit.js';
 const E = 12700;
@@ -178,6 +189,10 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
   let editing = null; // { id, session } while the text of the selected element is being edited (Phase 3.2.5-A)
   let lastTap = null; // { id, t, x, y } the last tap of a pen or finger on a selected element: a second one close by is a double tap
   let drag = null; // { id, pid, from: { dx, dy }, hdl, fromSize } while an element is being dragged (hdl: the handle of a resize drag, null for a move)
+  const styleSeq = new Map(); // id -> how many style draws of this element were started (a draw whose number is no longer the latest is stale, Phase 3.2.6-C)
+  let drawing = 0; // style draws in flight (a record being drawn may wait for a font): text edit mode is refused meanwhile
+  let ready = Promise.resolve(); // the style records of this slide drawn on attach (below)
+  let disposed = false;
   const offsetOf = (id) => offsets.get(id) || ZERO;
   const sizeOf = (id) => sizes.get(id) || null;
 
@@ -337,6 +352,7 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
   function beginEdit(id = selected, pt = null) {
     if (id == null || id !== selected) return { ok: false, reason: 'not-selected', message: 'Select a text shape first.' };
     if (editing) return { ok: true };
+    if (drawing) { const v = { ok: false, reason: 'style-pending', message: 'A style change is still being drawn. Try again in a moment.' }; onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; } // (3.2.6-C) the draw replaces the text box
     finishDrag(false); setCursor('');
     const node = handle.nodes.get(id); const v = textEditability(scene.byId.get(id), { node, resized: !!sizes.get(id) });
     if (!v.ok) { onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; }
@@ -366,6 +382,33 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
   }
   /** End text edit mode (the original text is put back). */
   function endEdit(why = 'api') { if (editing) editing.session.end(why); }
+
+  // ---- styles (Phase 3.2.6-C) ----
+  /** Draw the edit-state's CURRENT style record of `id` (null: the file's own style) with the renderer. Resolves to { drawn, stale }: `stale` = a newer draw of this element began meanwhile, so the renderer drew nothing for this one. */
+  function drawStyle(id) {
+    const rec = edits.getStyle(id); const n = (styleSeq.get(id) || 0) + 1; styleSeq.set(id, n);
+    if (!handle.setStyle) return Promise.resolve({ drawn: false, stale: false });
+    if (rec) drawing++; // (a null record is drawn at once: there is nothing to wait for)
+    let p; try { p = handle.setStyle(id, rec); } catch { p = false; }
+    return Promise.resolve(p).catch(() => false).then((drawn) => { if (rec) drawing--; return { drawn: !!drawn, stale: styleSeq.get(id) !== n }; });
+  }
+  /** The committed style records of this slide that can be drawn here (an edit-state without style methods has none). */
+  const styledHere = () => (edits && edits.stylesForSlide ? edits.stylesForSlide(scene.part).filter((m) => selectable(scene, handle, m.id)) : []);
+  /**
+   * Change the style of an element (Phase 3.2.6-C): `patch` is the edit-state's { text?, fill?, line? } (see commitStyle; `null` reverts). Resolves to { ok, reason? } as commitStyle answers, plus for a commit that changed something
+   * { drawn, stale }. Extra reasons: 'no-edit-state' (the controller has no edit-state to keep it in), 'not-styleable' (also for an element that is not drawn / selectable here), 'disposed'. Nothing is changed on a refusal.
+   */
+  async function style(id, patch) {
+    if (disposed) return { ok: false, reason: 'disposed' };
+    if (!edits || typeof edits.commitStyle !== 'function' || typeof edits.getStyle !== 'function') return { ok: false, reason: 'no-edit-state' };
+    if (!selectable(scene, handle, id)) return { ok: false, reason: 'not-styleable' };
+    const r = edits.commitStyle(scene, id, patch);
+    if (!r.ok) return r;
+    if (!r.changed) return { ...r, drawn: false, stale: false }; // (already what the edit-state holds, so it is already what is drawn)
+    endEdit('style'); // the text box is drawn again: a draft being typed is kept first
+    const d = await drawStyle(id);
+    return { ...r, drawn: d.drawn, stale: d.stale };
+  }
 
   function select(id) {
     if (!selectable(scene, handle, id)) return false;
@@ -445,6 +488,7 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
     for (const m of edits.resizesForSlide(scene.part)) if (selectable(scene, handle, m.id)) setSize(m.id, m.slideFrame); // resizes committed earlier (3.2.4-B) come back the same way
     let texted = false; for (const m of edits.textsForSlide(scene.part)) if (selectable(scene, handle, m.id) && handle.setText?.(m.id, edits.effectiveText(scene.byId.get(m.id)), false, true)) texted = true; // and so do the texts (3.2.5-B)
     if (texted) handle.fitText();
+    ready = Promise.all(styledHere().map((m) => drawStyle(m.id))).then(() => {}); // and the styles (3.2.6-C): last, so a styled text is drawn from the committed text
   }
   root.addEventListener('pointerdown', onDown);
   root.addEventListener('touchstart', onTouchStart, { passive: false });
@@ -461,6 +505,10 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
     /** The handle ('nw' … 'w') of the resize drag in progress, or null (no drag, or a move). */
     get resizing() { return drag ? drag.hdl : null; },
     pick, select, clear,
+    /** Change the style of an element and draw it (Phase 3.2.6-C, async, needs an `edits` option): see the header and style(). */
+    style,
+    /** Resolves when the style records of this slide, drawn on attach, are drawn (or were replaced by a newer draw). */
+    get ready() { return ready; },
     /** The id of the element whose text is being edited (Phase 3.2.5-A), or null. */
     get editing() { return editing ? editing.id : null; },
     /** Start text edit mode for the selected element (see the header): { ok: true } or { ok: false, reason, message }. */
@@ -472,11 +520,11 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
     /** The preview offset of an element in slide points ({ dx: 0, dy: 0 } when it has not been moved). */
     offset(id) { return { ...offsetOf(id) }; },
     /** Put every moved and resized element of this slide back at its file frame, committed moves and resizes included (the explicit undo: there is nothing to undo in the scene). */
-    reset() { endEdit('reset'); finishDrag(false); if (edits) { let t = false; for (const m of edits.textsForSlide(scene.part)) { edits.discardText(m.id); handle.setText?.(m.id, scene.byId.get(m.id).text, false); t = true; } if (t) handle.fitText(); } for (const id of [...sizes.keys()]) { setSize(id, null); edits?.discardResize(id); } for (const id of [...offsets.keys()]) { setOffset(id, ZERO); edits?.discard(id); } },
+    reset() { endEdit('reset'); finishDrag(false); if (edits) { if (edits.discardStyle && edits.stylesForSlide) for (const m of edits.stylesForSlide(scene.part)) { edits.discardStyle(m.id); drawStyle(m.id); } let t = false; for (const m of edits.textsForSlide(scene.part)) { edits.discardText(m.id); handle.setText?.(m.id, scene.byId.get(m.id).text, false); t = true; } if (t) handle.fitText(); } for (const id of [...sizes.keys()]) { setSize(id, null); edits?.discardResize(id); } for (const id of [...offsets.keys()]) { setOffset(id, ZERO); edits?.discard(id); } },
     /** The size of an element as drawn, in slide points: { w, h } and { dw, dh } against the file ({ dw: 0, dh: 0 } when it has not been resized). With an `edits` option a completed resize is in the edit-state too. */
     size(id) { return sizeInfo(id); },
     dispose() {
-      endEdit('dispose'); finishDrag(false); setCursor(''); for (const id of [...sizes.keys()]) setSize(id, null); for (const id of [...offsets.keys()]) setOffset(id, ZERO); // the preview goes off the drawn slide; committed moves and resizes stay in the edit-state and are drawn again by the next controller
+      disposed = true; endEdit('dispose'); finishDrag(false); setCursor(''); for (const id of [...sizes.keys()]) setSize(id, null); for (const id of [...offsets.keys()]) setOffset(id, ZERO); // the preview goes off the drawn slide; committed moves and resizes stay in the edit-state and are drawn again by the next controller
       root.removeEventListener('pointerdown', onDown); root.removeEventListener('touchstart', onTouchStart); root.removeEventListener('pointermove', onPointerMove); root.removeEventListener('pointerup', onUp); root.removeEventListener('pointercancel', onCancel);
       root.removeEventListener('lostpointercapture', onLost); root.removeEventListener('dragstart', onDragStart); root.removeEventListener('dblclick', onDblClick);
       if (selected != null) grabbable(selected, false);

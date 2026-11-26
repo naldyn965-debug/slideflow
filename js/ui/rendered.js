@@ -8,6 +8,7 @@ import { renderSlide } from '../render/render.js';
 import { attachSelection } from '../render/selection.js';
 import { editStateOf } from '../model/edit-state.js';
 import { loadStyles } from '../render/fonts.js';
+import { styleBar } from './style-bar.js';
 import { errorState, friendly, spinner } from './states.js';
 
 const LEVEL = { native: 'Native', approximated: 'Approximated', opaque: 'Not drawn' };
@@ -26,9 +27,10 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
   const note = h('p', { class: 'muted fine' });
   const selNote = h('p', { class: 'muted fine sf-sel-status', role: 'status', 'aria-live': 'polite' });
   const details = h('div', { class: 'details' });
+  const bar = styleBar({ edits }); // Phase 3.2.6-D: the style controls of the selected element (they call the controller's style(); the slide's notes are refreshed after every change)
   const el = h('div', { class: 'preview rendered', 'data-rendered': 'true' },
     film,
-    h('div', { class: 'stage-wrap' }, frame, note, selNote),
+    h('div', { class: 'stage-wrap' }, frame, bar.el, note, selNote),
     details);
 
   const mark = (i) => [...film.children].forEach((li, k) => { const b = li.firstChild; b.setAttribute('aria-current', String(k === i)); if (k === i && visible) b.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); });
@@ -68,7 +70,7 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
   async function draw(i) {
     const my = ++token;
     mark(i);
-    sel?.dispose(); sel = null; selNote.textContent = ''; // the old slide's selection ends with the old slide
+    sel?.dispose(); sel = null; bar.bind(null); selNote.textContent = ''; // the old slide's selection ends with the old slide
     if (picked && picked.slide !== i) picked = null;
     frame.replaceChildren(h('p', { class: 'status' }, spinner(), 'Rendering slide…'));
     try {
@@ -94,7 +96,7 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
       fit();
       if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(() => fit()); ro.observe(frame); }
       sel = attachSelection(handle, scene, {
-        onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null, id && sel ? sel.size(id) : null); },
+        onChange: (id) => { picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null, id && sel ? sel.size(id) : null); bar.sync(); },
         onMove: (m) => { if (m.phase !== 'start') say(scene, m.id, m, sel ? sel.size(m.id) : null); }, // a completed move is committed to the temporary edit-state, which draws it again on every redraw of this slide
         onResize: (r) => { if (r.phase !== 'start') say(scene, r.id, sel ? sel.offset(r.id) : null, r); }, // a completed resize is committed to the temporary edit-state (3.2.4-B), which draws it again on every redraw of this slide
         onEdit: (m) => { // Phase 3.2.5-A / B: text edit mode (a draft kept in the temporary edit-state on every exit but Escape; nothing is saved)
@@ -105,6 +107,7 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
         },
         edits,
       });
+      bar.bind({ sel, scene, onApplied: () => { if (my === token) refresh(); } });
       if (!(picked && sel.select(picked.id))) { picked = null; say(scene, null); } // drawn again (tab shown again): the same element stays selected
       refresh();
     } catch (e) {
@@ -122,6 +125,6 @@ export function renderedPanel(parsed, { onPick, current = () => 0 } = {}) {
     goto(i) { index = i; mark(i); if (visible) draw(i); },
     show() { visible = true; el.hidden = false; if (index < 0) index = current(); mark(index); draw(index); },
     hide() { sel?.endEdit('hide'); visible = false; token++; },
-    dispose() { token++; ro?.disconnect(); sel?.dispose(); sel = null; handle?.dispose(); handle = null; scenes.clear(); edits.clear(); },
+    dispose() { token++; ro?.disconnect(); bar.dispose(); sel?.dispose(); sel = null; handle?.dispose(); handle = null; scenes.clear(); edits.clear(); },
   };
 }

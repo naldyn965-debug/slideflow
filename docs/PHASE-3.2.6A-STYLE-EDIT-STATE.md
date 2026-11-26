@@ -1,6 +1,6 @@
 # Phase 3.2.6-A: style edit-state (data only)
 
-The first stage of style editing: the temporary edit-state can now keep **completed style edits** next to the moves, resizes and text edits. This stage is **data only**. It follows the design of the 3.2.6 audit. Nothing is drawn differently, no control exists, nothing is written to the XML and nothing is exported: `render.js`, `selection.js`, `text-edit.js`, `rendered.js`, the resolver and the Scene Model are not touched (a test checks that none of them mentions the new API). Phase 3.2.6-B (renderer, controller, UI) is not started.
+The first stage of style editing: the temporary edit-state can now keep **completed style edits** next to the moves, resizes and text edits. This stage is **data only**. It follows the design of the 3.2.6 audit. Nothing is drawn differently, no control exists, nothing is written to the XML and nothing is exported: `render.js`, `selection.js`, `text-edit.js`, `rendered.js`, the resolver and the Scene Model are not touched (in 3.2.6-A a test checked that none of them mentioned the new API; since 3.2.6-B only `render.js` does). Phase 3.2.6-B (renderer, done: see [PHASE-3.2.6B-STYLE-RENDERER.md](PHASE-3.2.6B-STYLE-RENDERER.md)), 3.2.6-C (controller, UI) are separate stages.
 
 Only `js/model/edit-state.js` changed in the code.
 
