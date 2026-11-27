@@ -1,0 +1,506 @@
+diff -ruN '--exclude=node_modules' /tmp/base7a/TESTING.md ./TESTING.md
+--- /tmp/base7a/TESTING.md	2026-11-27 22:47:51.000000000 +0000
++++ ./TESTING.md	2026-11-27 23:16:33.147780533 +0000
+@@ -304,3 +304,19 @@
+ - Mutation checks (one-off, not committed; 24 mutations of `textbox.js`, `scene.js`, `edit-state.js`, `textbox-edit.js`, `selection.js`, `rendered.js`, `style-bar.js`, `render.js`): frame width, direction, blank test, autofit type, alignment, added flag, boxes not walked, xml id clash, leftover records, `clear()`, direction record, Escape, key leakage, focus leaving, empty flag, resized refusal, no retry while styles draw, stale scene, text controls off in an empty box, no editor after Add, empty box not removed, empty box not drawn: **22 detected**. **2 stay alive, both defensive**: the redraw that waits for a lasting press (headless Chromium never reproduced the lost click it prevents) and the removal of a never-typed box when the selection leaves it (the edit's own end always removes it first; this path only matters if the editor could not open).
+ 
+ Not tested: a real touch device, IME composition, other browsers, a screen reader.
++
++## Phase 3.2.7-B (shapes engine)
++
++Automated: `node tests/selection.mjs` went from 1251 to 1297 checks (section "Phase 3.2.7-B: shapes ... in the real UI": real Chromium, real mouse and keyboard, the real upload, Rendered tab, filmstrip, style bar and dialog, plus page-side model checks on a real parse of `p321-selection.pptx`); `render.mjs` 675, `e2e.mjs` 108, `npm run test:analysis` 206 (31 FOOD checks SKIPPED without the deck); all pass. Two small edits to 3.2.7-A checks: the count line now says "N new element(s) included" (it counts shapes too), and a new check pins what the editor of an empty text box looks like (the deck's font and text colour), because the `addedLook()` that feeds it was dropped by mistake in this phase's first edit and no check noticed (restored; the check now catches it). Playwright 1.63.0 with `--no-save`, `package.json` untouched.
++
++- Buttons: Add text box, Rectangle, Rounded rectangle, Ellipse, Line, Arrow, Remove (disabled unless an element the preview added is selected).
++- Each shape: one more native element, the right kind (`shape` / `line`), 240 × 108 pt centred (closed) or 288 × 0 flat (line, arrow), selected with the outline on it, no editor tried, the status line just names it; a further element sits lower and to the right; PowerPoint's names (Rectangle, Rounded Rectangle, Oval, Straight Connector, Straight Arrow Connector).
++- Look: theme colours (accent 1 fill with a darker 1 pt outline; 2.25 pt in the text colour for a line / arrow, a triangle at the arrow's end); preset geometry (plain box, 1/6 radius, ellipse filling its frame).
++- Style bar: fill and outline on closed shapes, outline only on a line / arrow, text controls and Reset off until a change; colours drawn; Reset style restores the default look; the arrow head follows the colour.
++- Move and resize with the real mouse (a flat line stays flat; its corner handles lengthen it); a double click on a shape opens no editor ("no drawn text to edit"); a click on a line selects it.
++- Navigation and the Slides tab keep the shapes with colour, place and size; shapes belong to their slide (slide 2's id carries `slide2.xml`).
++- Remove: one element less with the right message; disabled for the file's own elements; a text box is removable too; a shape made afterwards is fresh. Adding a shape while a text box is edited keeps the typed text.
++- The file: the slide document serialises the same with the elements in the scene; they are `sp` (rect / roundRect / ellipse) and `cxnSp` (line / straightConnector1) built from detached elements with unique ids, lines flat; `e.added` carries the kind; only a text box has text of its own (a shape refuses `setAddedText`, an unknown kind is refused); `removeAdded()` takes move / resize / style records with it; `clear()` forgets all; nothing is written to localStorage or IndexedDB; closing the dialog (also mid-drag) leaves no listener and the next opening has no shapes.
++- Mutation checks (one-off, not committed; 18 mutations of `textbox.js`, `scene.js`, `edit-state.js`, `rendered.js`): width, flat lines, arrow head, fill, geometry, colours, shade, cascade, the kind flag, shapes treated as text, a shape accepting text, unknown kinds, Remove for the file's elements, every element opening an editor, Remove making an element, no Arrow button, Remove not redrawing: **17 detected**; 1 stays alive and is equivalent: Remove not ending a text edit first (the click on the button already moves focus out of the editor, which ends the edit).
++
++Not tested: a real touch device, other browsers, a screen reader.
+diff -ruN '--exclude=node_modules' /tmp/base7a/css/styles.css ./css/styles.css
+--- /tmp/base7a/css/styles.css	2026-11-27 12:42:49.000000000 +0000
++++ ./css/styles.css	2026-11-27 22:55:13.022503191 +0000
+@@ -244,3 +244,7 @@
+ .sf-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0; }
+ .sf-add .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+ .sf-add-hint { font-size: 13px; }
++/* Phase 3.2.7-B: the shape buttons share the row of "Add text box"; Remove is only for elements the preview added. */
++.sf-add .btn { min-height: 34px; padding: 0 10px; font-size: 13px; }
++.sf-add { gap: 6px 8px; }
++.sf-add-sub { margin-top: 0; }
+diff -ruN '--exclude=node_modules' /tmp/base7a/docs/PHASE-3.2.7B-SHAPES-ENGINE.md ./docs/PHASE-3.2.7B-SHAPES-ENGINE.md
+--- /tmp/base7a/docs/PHASE-3.2.7B-SHAPES-ENGINE.md	1970-01-01 00:00:00.000000000 +0000
++++ ./docs/PHASE-3.2.7B-SHAPES-ENGINE.md	2026-11-27 23:16:33.151780534 +0000
+@@ -0,0 +1,19 @@
++# Phase 3.2.7-B: shapes engine
++
++The Rendered tab can add a rectangle, a rounded rectangle, an ellipse, a line and an arrow to the current slide, and remove what it added. Preview only: nothing is saved or exported; the elements live while the deck is open.
++
++## How it fits (the text box infrastructure of 3.2.7-A, generalised)
++- **A record per element** in the edit-state, now with a `kind` (`textbox`, `rect`, `roundRect`, `ellipse`, `line`, `arrow`): `addElement(scene, kind)` (`addTextBox` is the `textbox` case), `getAdded`, `addedFor`, `removeAdded`, `isAdded`; `isAddedText(id)` tells the text boxes (the only ones with text of their own; `setAddedText` refuses a shape). Moves, resizes and styles are ordinary records over the element's id.
++- **`js/model/textbox.js`** builds the detached element of a record: `shapeElement()` makes a `p:sp` (rect / roundRect / ellipse: theme accent 1 fill, darker accent 1 outline, 1 pt) or a `p:cxnSp` (line: `line`, arrow: `straightConnector1` with a triangle `tailEnd`; 2.25 pt in the text colour). Colours are theme colours, so a shape follows the deck. `shapeFrame()` gives the frame: 25% × 20% of the slide centred for a closed shape; 30% of the width, flat, at mid height for a line or an arrow; further elements offset down and right.
++- **`scene.js`** walks the detached elements after the file's own (on top) and sets `e.added` to the kind. The renderer, selection, move, resize, style bar and resolver see ordinary shapes and connectors: the style bar offers fill + outline for a closed shape and the outline only for a line or arrow; `render.js` and `style-bar.js` treat only `added === 'textbox'` as text boxes.
++- **`js/ui/rendered.js`**: six add buttons and Remove (enabled only for elements the preview added); a shape is selected right after it is made (no editor); Remove deletes the element with its records and redraws; the count line says "N new elements included".
++- The PPTX XML and zip are never touched.
++
++## Limits
++- No text in a new shape yet (a double click says so); shapes cannot be removed by key, only with Remove; the file's own elements cannot be removed.
++- Line width, dash, arrow style and shadow are not editable (the style system edits colours only); lines and arrows start horizontal and are lengthened or moved, not rotated or flipped.
++- A resized closed shape is stretched like any other shape; no save, export, undo, layers or grouping.
++- No touch, other-browser or screen-reader testing.
++
++## Tests
++selection 1297 (1251 + 46), render 675, e2e 108, analysis 206 (31 SKIPPED); mutation checks in TESTING.md (17 of 18 detected, 1 equivalent).
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/model/edit-state.js ./js/model/edit-state.js
+--- /tmp/base7a/js/model/edit-state.js	2026-11-27 12:49:51.000000000 +0000
++++ ./js/model/edit-state.js	2026-11-27 23:09:56.135950950 +0000
+@@ -52,7 +52,7 @@
+ // A parent whose scale is zero (a collapsed group) has no inverse: such a move is refused ('singular') and the element stays where the file has it.
+ import { localMatrix, mul } from './scene.js';
+ import { MIN_PT, FLAT_PT, MAX_TIMES, SAME_PT } from './resize-limits.js';
+-import { paraRtl, isBlankText, defaultFrame } from './textbox.js';
++import { paraRtl, isBlankText, defaultFrame, shapeFrame, ADDED_KINDS, KIND_LABEL } from './textbox.js';
+ 
+ const E = 12700;
+ const num = (v) => typeof v === 'number' && Number.isFinite(v);
+@@ -82,7 +82,7 @@
+ const copy = (r) => ({ ...r, slideDelta: { ...r.slideDelta }, localDelta: { ...r.localDelta }, origin: { ...r.origin }, position: { ...r.position } });
+ const copyRz = (r) => ({ ...r, slideFrame: { ...r.slideFrame }, scale: { ...r.scale }, origin: { ...r.origin }, extent: { ...r.extent }, localShift: { ...r.localShift }, position: { ...r.position } });
+ const EPS = 1e-6; // points: float noise of a size that went through the pointer and back
+-const copyAdded = (r) => ({ ...r, paras: r.paras.map((p) => ({ ...p })) });
++const copyAdded = (r) => ({ ...r, ...(r.paras ? { paras: r.paras.map((p) => ({ ...p })) } : {}) });
+ const copyTx = (r) => ({ ...r, paras: r.paras.map((p) => ({ ...p, runs: p.runs.map((x) => ({ ...x })), ...(p.fill ? { fill: { ...p.fill } } : {}) })) });
+ /** The text of an element with a text record applied: new paragraph / run objects, `e.text` itself is never written. Without a record it IS `e.text`. */
+ function textWithRecord(e, rec) {
+@@ -206,7 +206,7 @@
+   const resizes = new Map(); // element id -> resize record (Phase 3.2.4-B)
+   const texts = new Map(); // element id -> text record (Phase 3.2.5-B)
+   const styles = new Map(); // element id -> style record (Phase 3.2.6-A)
+-  const added = new Map(); // element id -> new text box record (Phase 3.2.7-A): { id, part, xmlId, name, x, y, w, h (EMU), paras: [{ text, rtl }] }; the box's own content, see js/model/textbox.js
++  const added = new Map(); // element id -> record of a new text box (Phase 3.2.7-A) or shape (3.2.7-B): { id, part, xmlId, kind, name, x, y, w, h (EMU), paras: [{ text, rtl }] (text boxes only) }; the element's own content, see js/model/textbox.js
+   let version = 0; // counts every change of the content, so "nothing was written" is checkable
+ 
+   return {
+@@ -396,23 +396,27 @@
+     list() { return [...moves.values()].map(copy); },
+     // NEW TEXT BOXES (Phase 3.2.7-A). A record here is a text box that does not exist in the file: its frame and its text ARE the record (textBoxElement() turns it into the shape the scene walks), so the
+     // box's own text edits replace `paras` and never make a text record; its moves, resizes and styles are ordinary records over its id. discard(id) and reset() leave the box itself (and its text) where it is.
+-    /** Make a new, empty text box on the slide of `scene`: { ok: true, id, box } with the record's copy. The xml id is above every id of the slide and of the boxes already made on it. */
+-    addTextBox(scene) {
++    /** Make a new element on the slide of `scene`: an empty text box ('textbox') or a shape ('rect', 'roundRect', 'ellipse', 'line', 'arrow', Phase 3.2.7-B): { ok: true, id, box } with the record's copy. The xml id is above every id of the slide and of the elements already made on it. */
++    addElement(scene, kind = 'textbox') {
++      if (!ADDED_KINDS.includes(kind)) return { ok: false, reason: 'bad-kind' };
+       if (!scene || !scene.byId || !scene.part || !(scene.width > 0) || !(scene.height > 0)) return { ok: false, reason: 'no-slide' };
+-      const used = [...scene.byId.keys()].map((k) => Number(String(k).split('#').pop())).filter(Number.isFinite); // (every element the scene walked, boxes made earlier included)
++      const used = [...scene.byId.keys()].map((k) => Number(String(k).split('#').pop())).filter(Number.isFinite); // (every element the scene walked, those made earlier included)
+       const mine = [...added.values()].filter((r) => r.part === scene.part);
+       const xmlId = Math.max(1, ...used, ...mine.map((r) => Number(r.xmlId))) + 1;
+-      const f = defaultFrame(scene.width, scene.height, mine.length);
+-      const rec = { id: `${scene.part}#${xmlId}`, part: scene.part, xmlId, name: `TextBox ${xmlId - 1}`, ...f, paras: [{ text: '', rtl: false }] };
++      const f = kind === 'textbox' ? defaultFrame(scene.width, scene.height, mine.length) : shapeFrame(kind, scene.width, scene.height, mine.length);
++      const rec = { id: `${scene.part}#${xmlId}`, part: scene.part, xmlId, kind, name: `${KIND_LABEL[kind]} ${xmlId - 1}`, ...f, ...(kind === 'textbox' ? { paras: [{ text: '', rtl: false }] } : {}) };
+       added.set(rec.id, rec); version++;
+       return { ok: true, id: rec.id, box: copyAdded(rec) };
+     },
+-    /** What typing into an EMPTY new box looks like: the default run of its first paragraph with the style record applied ({ hex, font, rtl, sz, b, i }), or null. */
++    addTextBox(scene) { return this.addElement(scene, 'textbox'); },
++    /** A text box made in the preview (not a shape): the ones with text of their own. */
++    /** What typing into an EMPTY new text box looks like: the default run of its first paragraph with the style record applied ({ hex, font, rtl, sz, b, i }), or null. */
+     addedLook(scene, id) {
+-      const e = scene && scene.byId ? scene.byId.get(id) : null; if (!e || !added.has(id) || !e.text) return null;
++      const e = scene && scene.byId ? scene.byId.get(id) : null; if (!e || !this.isAddedText(id) || !e.text) return null;
+       const dr = effectiveText(e, null, styles.get(id))?.paras?.[0]?.defRun; if (!dr) return null;
+       return { hex: dr.hex || '', font: dr.font, rtl: !!dr.rtl, sz: dr.sz || 0, b: !!dr.b, i: !!dr.i };
+     },
++    isAddedText(id) { const r = added.get(id); return !!r && r.kind === 'textbox'; },
+     isAdded(id) { return added.has(id); },
+     getAdded(id) { const r = added.get(id); return r ? copyAdded(r) : null; },
+     /** The boxes made on one slide (by part), oldest first. */
+@@ -420,7 +424,7 @@
+     listAdded() { return [...added.values()].map(copyAdded); },
+     /** Replace the text of a box: `texts` = one string per paragraph, exactly as typed (a paragraph's direction follows its first strong letter). Returns { ok, changed, empty } (`empty`: nothing but white space is left). */
+     setAddedText(id, texts) {
+-      const r = added.get(id); if (!r) return { ok: false, reason: 'unknown-box' };
++      const r = added.get(id); if (!r) return { ok: false, reason: 'unknown-box' }; if (r.kind !== 'textbox') return { ok: false, reason: 'not-a-text-box' };
+       if (!Array.isArray(texts) || !texts.every((t) => typeof t === 'string')) return { ok: false, reason: 'bad-text' };
+       const list = texts.length ? texts : ['']; const paras = list.map((text) => ({ text, rtl: paraRtl(text) }));
+       const changed = JSON.stringify(paras) !== JSON.stringify(r.paras);
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/model/scene.js ./js/model/scene.js
+--- /tmp/base7a/js/model/scene.js	2026-11-27 12:47:37.000000000 +0000
++++ ./js/model/scene.js	2026-11-27 23:08:47.699702266 +0000
+@@ -269,7 +269,7 @@
+   const st = { part, origin, rendered: true, branch: null, rels, layoutDoc, masterDoc, ids: new Set(), byId: new Map(), unplaced: [], z, basePath: [] };
+   const out = [];
+   if (tree) walk(null, st, tree, null, IDENTITY, out);
+-  if (added && added.length) { const n0 = out.length; walk(null, st, textBoxTree(doc, added), null, IDENTITY, out); for (const e of out.slice(n0)) if (e.depth === 0) e.added = true; } // Phase 3.2.7-A: text boxes made in the preview, walked like the file's own shapes, on top of them
++  if (added && added.length) { const n0 = out.length; walk(null, st, textBoxTree(doc, added), null, IDENTITY, out); const kinds = new Map(added.map((r) => [String(r.xmlId), r.kind || 'textbox'])); for (const e of out.slice(n0)) if (e.depth === 0) e.added = kinds.get(String(e.id).split('#').pop()) || 'textbox'; } // Phase 3.2.7-A: text boxes made in the preview, walked like the file's own shapes, on top of them
+   // Template placeholders are inheritance sources, not slide content: they are never drawn on a slide, so they are left out of the layer.
+   const keep = origin === 'slide' ? out : out.filter((e) => !(e.ph && e.depth === 0));
+   return { origin, part, rels, elements: keep, byId: st.byId, unplaced: st.unplaced };
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/model/textbox.js ./js/model/textbox.js
+--- /tmp/base7a/js/model/textbox.js	2026-11-27 12:47:32.000000000 +0000
++++ ./js/model/textbox.js	2026-11-27 23:08:00.059356832 +0000
+@@ -1,4 +1,4 @@
+-// New text boxes (Phase 3.2.7-A). A text box made in the preview is a RECORD in the temporary edit-state (js/model/edit-state.js: id, frame in EMU, one { text, rtl } per paragraph). The record is the
++// New text boxes (Phase 3.2.7-A) and new shapes (Phase 3.2.7-B). A text box or shape made in the preview is a RECORD in the temporary edit-state (js/model/edit-state.js: id, frame in EMU, one { text, rtl } per paragraph). The record is the
+ // box's "file": every time the slide's scene is built, the record is turned into a DETACHED <p:sp> element of the slide's own document (created here, never attached to the tree) and walked like any
+ // other shape, so selection, move, resize, style, rendering and text resolution see an ordinary text shape. The PPTX XML is never touched: the parsed document, the zip and the original shapes stay as
+ // they were; nothing is saved or exported.
+@@ -21,6 +21,18 @@
+   return { x: Math.min(Math.round((slideW - w) / 2) + step, slideW - w), y: Math.min(Math.round(slideH * 0.4) + step, slideH - h), w, h };
+ }
+ 
++/** The kinds of element the preview can make: a text box and the five shapes of Phase 3.2.7-B (a line and an arrow are connectors). */
++export const SHAPE_KINDS = ['rect', 'roundRect', 'ellipse', 'line', 'arrow'];
++export const ADDED_KINDS = ['textbox', ...SHAPE_KINDS];
++export const KIND_LABEL = { textbox: 'TextBox', rect: 'Rectangle', roundRect: 'Rounded Rectangle', ellipse: 'Oval', line: 'Straight Connector', arrow: 'Straight Arrow Connector' };
++export const isLineKind = (k) => k === 'line' || k === 'arrow';
++/** The frame of a new shape in EMU: a closed shape is 25% of the slide wide and 20% high, centred; a line or an arrow is 30% of the slide wide and flat (no height), at mid height. Each further element on the slide is offset a little down and right. */
++export function shapeFrame(kind, slideW, slideH, n) {
++  if (!isLineKind(kind)) { const w = Math.round(slideW * 0.25); const h = Math.round(slideH * 0.2); const step = Math.round(Math.min(slideW, slideH) * 0.04) * (n % 6); return { x: Math.min(Math.round((slideW - w) / 2) + step, slideW - w), y: Math.min(Math.round((slideH - h) / 2) + step, slideH - h), w, h }; }
++  const w = Math.round(slideW * 0.3); const step = Math.round(Math.min(slideW, slideH) * 0.04) * (n % 6);
++  return { x: Math.min(Math.round((slideW - w) / 2) + step, slideW - w), y: Math.min(Math.round(slideH / 2) + step, slideH), w, h: 0 };
++}
++
+ const mk = (doc, tag, attrs = {}, ns = NS_A) => { const e = doc.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
+ /** A detached <p:sp> for the record `rec` ({ xmlId, name, x, y, w, h, paras: [{ text, rtl }] }), created in `doc` (the slide's document) and attached nowhere. */
+ export function textBoxElement(doc, rec) {
+@@ -39,5 +51,22 @@
+   sp.append(nv, pr, body);
+   return sp;
+ }
++const scheme = (doc, val, shade) => { const c = mk(doc, 'a:schemeClr', { val }); if (shade) c.append(mk(doc, 'a:shade', { val: shade })); const f = mk(doc, 'a:solidFill'); f.append(c); return f; };
++/** A detached <p:sp> (rectangle, rounded rectangle, ellipse) or <p:cxnSp> (line, arrow) for a shape record, created in `doc` and attached nowhere. Colours follow the deck's theme: a closed shape is filled accent 1 with a darker outline of the same accent (1 pt), a line or an arrow is 2.25 pt in the text colour; an arrow has a triangle at its end. */
++export function shapeElement(doc, rec) {
++  const line = isLineKind(rec.kind); const sp = mk(doc, line ? 'p:cxnSp' : 'p:sp', {}, NS_P);
++  const nv = mk(doc, line ? 'p:nvCxnSpPr' : 'p:nvSpPr', {}, NS_P); nv.append(mk(doc, 'p:cNvPr', { id: rec.xmlId, name: rec.name }, NS_P), mk(doc, line ? 'p:cNvCxnSpPr' : 'p:cNvSpPr', {}, NS_P), mk(doc, 'p:nvPr', {}, NS_P));
++  const pr = mk(doc, 'p:spPr', {}, NS_P); const xf = mk(doc, 'a:xfrm'); xf.append(mk(doc, 'a:off', { x: rec.x, y: rec.y }), mk(doc, 'a:ext', { cx: rec.w, cy: rec.h }));
++  const geom = mk(doc, 'a:prstGeom', { prst: { rect: 'rect', roundRect: 'roundRect', ellipse: 'ellipse', line: 'line', arrow: 'straightConnector1' }[rec.kind] }); geom.append(mk(doc, 'a:avLst'));
++  pr.append(xf, geom);
++  if (!line) pr.append(scheme(doc, 'accent1'));
++  const ln = mk(doc, 'a:ln', { w: line ? 28575 : 12700 }); ln.append(line ? scheme(doc, 'tx1') : scheme(doc, 'accent1', 50000));
++  if (rec.kind === 'arrow') ln.append(mk(doc, 'a:tailEnd', { type: 'triangle', w: 'med', len: 'med' }));
++  pr.append(ln); sp.append(nv, pr);
++  return sp;
++}
++/** The detached element of any record (text box or shape). */
++export const addedElement = (doc, rec) => (rec.kind && rec.kind !== 'textbox' ? shapeElement(doc, rec) : textBoxElement(doc, rec));
++
+ /** A detached <p:spTree> holding the boxes of `recs`, for the scene walker (never attached to a document). */
+-export function textBoxTree(doc, recs) { const tree = mk(doc, 'p:spTree', {}, NS_P); for (const r of recs) tree.append(textBoxElement(doc, r)); return tree; }
++export function textBoxTree(doc, recs) { const tree = mk(doc, 'p:spTree', {}, NS_P); for (const r of recs) tree.append(addedElement(doc, r)); return tree; }
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/render/render.js ./js/render/render.js
+--- /tmp/base7a/js/render/render.js	2026-11-27 17:46:13.000000000 +0000
++++ ./js/render/render.js	2026-11-27 22:54:16.254059332 +0000
+@@ -262,7 +262,7 @@
+   if (e.tag === 'grpSp') { box.classList.add('sf-group'); return box; }
+   if (rendersAsShape(e)) {
+     const g = await renderShape(ctx, e, box);
+-    if (e.text && e.text.paras.length && (e.text.paras.some((p) => p.runs.length) || e.added)) { // (a new text box is drawn while it is empty too: it is the place its text is typed into, Phase 3.2.7-A)
++    if (e.text && e.text.paras.length && (e.text.paras.some((p) => p.runs.length) || e.added === 'textbox')) { // (a new text box is drawn while it is empty too: it is the place its text is typed into, Phase 3.2.7-A)
+       const tb = textBox(e.text, ctx.k);
+       const r = g.textRect; if (r) { const t = tb.style; t.left = L(r[0]); t.top = L(r[1]); t.width = L(r[2] - r[0]); t.height = L(r[3] - r[1]); }
+       box.append(tb);
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/render/selection.js ./js/render/selection.js
+--- /tmp/base7a/js/render/selection.js	2026-11-27 13:02:41.000000000 +0000
++++ ./js/render/selection.js	2026-11-27 22:54:16.253482331 +0000
+@@ -357,7 +357,7 @@
+     if (editing) return { ok: true };
+     if (drawing) { const v = { ok: false, reason: 'style-pending', message: 'A style change is still being drawn. Try again in a moment.' }; onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; } // (3.2.6-C) the draw replaces the text box
+     finishDrag(false); setCursor('');
+-    if (edits && edits.isAdded && edits.isAdded(id)) { // Phase 3.2.7-A: a new text box is edited with its own editor (its text structure is not a file's); a resized one is refused like any other shape (its text is stretched)
++    if (edits && edits.isAddedText && edits.isAddedText(id)) { // Phase 3.2.7-A: a new text box is edited with its own editor (its text structure is not a file's); a resized one is refused like any other shape (its text is stretched)
+       const node = handle.nodes.get(id); if (!node) return { ok: false, reason: 'no-text', message: 'This text box is not drawn.' };
+       if (sizes.get(id)) { const v = { ok: false, reason: 'resized', message: 'A resized text shape cannot be edited yet: its text is stretched.' }; onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; }
+       const lk = edits.addedLook ? edits.addedLook(scene, id) : null; // what typing into an empty box looks like (its default run, style record applied)
+@@ -388,7 +388,7 @@
+   function afterEdit(id, why, draft) {
+     editing = null; let committed = false; let changed = false;
+     let box = null; // Phase 3.2.7-A: set for a new text box: { empty } = what its record holds now
+-    if (edits && edits.isAdded && edits.isAdded(id)) {
++    if (edits && edits.isAddedText && edits.isAddedText(id)) {
+       if (draft && draft.free) { const r = edits.setAddedText(id, draft.texts); committed = r.ok; changed = r.ok && r.changed; }
+       const rec = edits.getAdded(id); box = { empty: !rec || isBlankText(rec.paras.map((p) => p.text)) };
+     } else if (draft && edits) {
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/ui/rendered.js ./js/ui/rendered.js
+--- /tmp/base7a/js/ui/rendered.js	2026-11-27 17:45:42.000000000 +0000
++++ ./js/ui/rendered.js	2026-11-27 23:13:23.793375242 +0000
+@@ -29,11 +29,15 @@
+   const note = h('p', { class: 'muted fine' });
+   const selNote = h('p', { class: 'muted fine sf-sel-status', role: 'status', 'aria-live': 'polite' });
+   const details = h('div', { class: 'details' });
+-  const addBtn = h('button', { type: 'button', class: 'btn sf-add-tb', 'data-act': 'add-textbox', disabled: true, onclick: () => addTextBox() }, 'Add text box'); // Phase 3.2.7-A
++  // Phase 3.2.7-A/B: what the preview can add to a slide (a text box and five shapes) and the button that removes an added element
++  const ADD = [['textbox', 'Add text box'], ['rect', 'Rectangle'], ['roundRect', 'Rounded rectangle'], ['ellipse', 'Ellipse'], ['line', 'Line'], ['arrow', 'Arrow']];
++  const addBtns = ADD.map(([kind, label]) => h('button', { type: 'button', class: `btn ${kind === 'textbox' ? 'sf-add-tb' : 'sf-add-sh'}`, 'data-act': kind === 'textbox' ? 'add-textbox' : 'add-shape', 'data-shape': kind, disabled: true, onclick: () => addElement(kind) }, label));
++  const removeBtn = h('button', { type: 'button', class: 'btn sf-add-rm', 'data-act': 'remove-added', disabled: true, onclick: () => removeSelected() }, 'Remove');
++  const addOff = (off) => { for (const b of addBtns) b.disabled = off; if (off) removeBtn.disabled = true; };
+   const bar = styleBar({ edits }); // Phase 3.2.6-D: the style controls of the selected element (they call the controller's style(); the slide's notes are refreshed after every change)
+   const el = h('div', { class: 'preview rendered', 'data-rendered': 'true' },
+     film,
+-    h('div', { class: 'stage-wrap' }, frame, h('div', { class: 'sf-add' }, addBtn, h('span', { class: 'sf-add-hint muted' }, 'Adds an editable text box to this slide. Preview only: nothing is saved.')), bar.el, note, selNote),
++    h('div', { class: 'stage-wrap' }, frame, h('div', { class: 'sf-add' }, ...addBtns), h('div', { class: 'sf-add sf-add-sub' }, removeBtn, h('span', { class: 'sf-add-hint muted' }, 'Adds a text box or a shape to this slide; Remove deletes an element you added. Preview only: nothing is saved.')), bar.el, note, selNote),
+     details);
+ 
+   const mark = (i) => [...film.children].forEach((li, k) => { const b = li.firstChild; b.setAttribute('aria-current', String(k === i)); if (k === i && visible) b.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); });
+@@ -60,7 +64,7 @@
+     ].filter(Boolean);
+   }
+ 
+-  const kindOf = (e) => (e && e.added ? 'Text box' : e ? KIND[e.kind] || e.kind : 'the element'); // Phase 3.2.7-A
++  const kindOf = (e) => (e && e.added === 'textbox' ? 'Text box' : e ? KIND[e.kind] || e.kind : 'the element'); // Phase 3.2.7-A
+   const IDLE = 'Nothing selected. Click or tap an element to select it, then drag it to move it (preview only: nothing is edited or saved).';
+   const pt = (n) => `${Math.round(n * 10) / 10}`;
+   /** Status line. `mv` = the selected element's temporary preview offset in slide points (Phase 3.2.3-A), shown only while it is not zero; `rs` = its temporary resize preview (Phase 3.2.4-A), shown only while its size differs from the file's. */
+@@ -73,7 +77,7 @@
+ 
+   async function draw(i) {
+     const my = ++token;
+-    mark(i); addBtn.disabled = true;
++    mark(i); addOff(true);
+     sel?.dispose(); sel = null; bar.bind(null); selNote.textContent = ''; // the old slide's selection ends with the old slide
+     if (picked && picked.slide !== i) picked = null;
+     frame.replaceChildren(h('p', { class: 'status' }, spinner(), 'Rendering slide…'));
+@@ -94,7 +98,7 @@
+         handle.fitText();
+         const rep = handle.report();
+         const made = scene.elements.filter((e) => e.added).length;
+-        note.textContent = `${plural(rep.counts.native + rep.counts.approximated + rep.counts.opaque, 'element')} drawn from the file${made ? ` (${plural(made, 'new text box', 'new text boxes')} included)` : ''}: ${rep.counts.native} native, ${rep.counts.approximated} approximated, ${rep.counts.opaque} not drawn.`;
++        note.textContent = `${plural(rep.counts.native + rep.counts.approximated + rep.counts.opaque, 'element')} drawn from the file${made ? ` (${plural(made, 'new element')} included)` : ''}: ${rep.counts.native} native, ${rep.counts.approximated} approximated, ${rep.counts.opaque} not drawn.`;
+         details.replaceChildren(...describe(rep, rep.fonts, scene));
+       };
+       let pendingFit = false; // a resize of the frame while text is being edited is applied when the mode ends (re-fitting text under the caret would make it jump)
+@@ -102,7 +106,7 @@
+       fit();
+       if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(() => fit()); ro.observe(frame); }
+       sel = attachSelection(handle, scene, {
+-        onChange: (id) => { const prev = picked && picked.slide === i ? picked.id : null; if (prev && prev !== id) emptyLeft(i, prev); picked = id ? { slide: i, id } : null; say(scene, id, id && sel ? sel.offset(id) : null, id && sel ? sel.size(id) : null); bar.sync(); },
++        onChange: (id) => { const prev = picked && picked.slide === i ? picked.id : null; if (prev && prev !== id) emptyLeft(i, prev); picked = id ? { slide: i, id } : null; removeBtn.disabled = !(id && edits.isAdded(id)); say(scene, id, id && sel ? sel.offset(id) : null, id && sel ? sel.size(id) : null); bar.sync(); },
+         onMove: (m) => { if (m.phase !== 'start') say(scene, m.id, m, sel ? sel.size(m.id) : null); }, // a completed move is committed to the temporary edit-state, which draws it again on every redraw of this slide
+         onResize: (r) => { if (r.phase !== 'start') say(scene, r.id, sel ? sel.offset(r.id) : null, r); }, // a completed resize is committed to the temporary edit-state (3.2.4-B), which draws it again on every redraw of this slide
+         onEdit: (m) => { // Phase 3.2.5-A / B: text edit mode (a draft kept in the temporary edit-state on every exit but Escape; nothing is saved)
+@@ -115,7 +119,7 @@
+       });
+       bar.bind({ sel, scene, onApplied: () => { if (my === token) refresh(); } });
+       if (!(picked && sel.select(picked.id))) { picked = null; say(scene, null); } // drawn again (tab shown again): the same element stays selected
+-      refresh(); addBtn.disabled = false;
++      refresh(); addOff(false); removeBtn.disabled = !(sel.id && edits.isAdded(sel.id));
+       if (pendingNote) { selNote.textContent = pendingNote; pendingNote = null; }
+       if (autoEdit && sel.id === autoEdit) { const id = autoEdit; autoEdit = null; startEdit(my, sel, id, 0); } // a text box just made: its text is edited at once
+     } catch (e) {
+@@ -127,13 +131,13 @@
+     }
+   }
+ 
+-  /** Phase 3.2.7-A: make a new text box on the drawn slide, select it and edit its text at once. */
+-  function addTextBox() {
++  /** Phase 3.2.7-A/B: make a new text box (its text is edited at once) or shape ('rect', 'roundRect', 'ellipse', 'line', 'arrow') on the drawn slide and select it. */
++  function addElement(kind) {
+     const i = index; const scene = scenes.get(i);
+-    if (!visible || !handle || !scene || addBtn.disabled) return;
++    if (!visible || !handle || !scene || addBtns[0].disabled) return;
+     sel?.endEdit('api'); // a box being edited keeps its draft
+-    const r = edits.addTextBox(scene); if (!r.ok) return;
+-    picked = { slide: i, id: r.id }; autoEdit = r.id;
++    const r = edits.addElement(scene, kind); if (!r.ok) return;
++    picked = { slide: i, id: r.id }; autoEdit = kind === 'textbox' ? r.id : null;
+     draw(i); // the scene is built again with the new box in it
+   }
+   // A press in the panel (the slide, the style bar, the button) is finished before a redraw caused by a new box's edit begins: that redraw would disable and unbind the controls under the pointer.
+@@ -141,6 +145,14 @@
+   const onDown = () => { pressing = true; };
+   const onUp = () => { setTimeout(() => { pressing = false; for (const f of afterPress.splice(0)) f(); }, 0); };
+   el.addEventListener('pointerdown', onDown, true); document.addEventListener('pointerup', onUp, true); document.addEventListener('pointercancel', onUp, true);
++  /** Remove the selected element when it is one the preview added (the file's own elements are never removed). */
++  function removeSelected() {
++    const id = sel && sel.id; if (!id || !edits.isAdded(id)) return;
++    const name = scenes.get(index)?.byId.get(id)?.name; sel.endEdit('api');
++    if (!edits.removeAdded(id)) return;
++    picked = null; autoEdit = null; pendingNote = `Removed ${name ? `“${name}”` : 'the element'}.`;
++    draw(index);
++  }
+   /** Text edit mode of a box just made: the styles of the slide are still being drawn for a moment after it is attached (the controller refuses edit mode meanwhile), so it is tried again shortly. */
+   function startEdit(my, ctl, id, n) {
+     if (my !== token || sel !== ctl || ctl.id !== id) return;
+@@ -148,7 +160,7 @@
+     if (!r.ok && r.reason === 'style-pending' && n < 40) setTimeout(() => startEdit(my, ctl, id, n + 1), 50);
+   }
+   /** The selection left a new text box (slide i): one that never got any text is removed. */
+-  function emptyLeft(i, id) { const r = edits.getAdded(id); if (r && isBlankText(r.paras.map((p) => p.text))) afterBox(i, { id, empty: true }); }
++  function emptyLeft(i, id) { const r = edits.getAdded(id); if (r && r.paras && isBlankText(r.paras.map((p) => p.text))) afterBox(i, { id, empty: true }); }
+   /** A new text box's text edit ended (slide i): an empty box is removed, a box whose text changed is drawn again from its record. Runs after the press that ended the edit is over (that press may select another element). */
+   function afterBox(i, m) {
+     const run = () => {
+diff -ruN '--exclude=node_modules' /tmp/base7a/js/ui/style-bar.js ./js/ui/style-bar.js
+--- /tmp/base7a/js/ui/style-bar.js	2026-11-27 13:05:15.000000000 +0000
++++ ./js/ui/style-bar.js	2026-11-27 22:54:16.254394072 +0000
+@@ -64,7 +64,7 @@
+     if (!ok) return null;
+     const st = edits.effectiveStyle(e) || {};
+     const t = e.kind === 'shape' && e.text && e.text.paras ? edits.effectiveStyledText(e) : null;
+-    const drawn = !!(t && (t.paras.some((p) => p.runs.length) || e.added)); // (the renderer draws a text box only for a paragraph that has runs)
++    const drawn = !!(t && (t.paras.some((p) => p.runs.length) || e.added === 'textbox')); // (the renderer draws a text box only for a paragraph that has runs)
+     const rs = drawn ? targets(t) : []; const fs = t && t.body && t.body.fontScale > 0 ? t.body.fontScale : 1;
+     return {
+       text: drawn, textColor: drawn && rs.some((r) => !r.link),
+diff -ruN '--exclude=node_modules' /tmp/base7a/tests/selection.mjs ./tests/selection.mjs
+--- /tmp/base7a/tests/selection.mjs	2026-11-27 17:43:54.000000000 +0000
++++ ./tests/selection.mjs	2026-11-27 23:12:38.272373316 +0000
+@@ -4233,7 +4233,9 @@
+   let b = (await boxes())[0]; let ta = await taOf(); let st = await state();
+   ok(b && /^TextBox \d+$/.test(b.name) && (await count()) === n0 + 1 && b.box.join() === '288,216,384,65', 'Add text box: one more element on the slide, "TextBox N", 384 × 65 pt (40% of the slide wide), centred horizontally at 40% of the height', b);
+   ok(ta && ta.value === '' && ta.focused && ta.dir === 'auto' && st.ta === 1 && st.sel === 1 && /^Editing the text of Text box “TextBox/.test(await status()), 'it is selected and its text editor is open, empty and focused (dir="auto"), the status line says so', { ta, st, s: await status() });
+-  ok(b.support === 'native' && /1 new text box included/.test(st.note), 'it is drawn natively (no "not drawn exactly" note) and the count line says one new text box is included', { b, note: st.note });
++  const taLook = await ui.evaluate(() => { const t = document.querySelector('.sf-text-free'); const c = getComputedStyle(t); return { family: c.fontFamily, color: c.color, size: parseFloat(c.fontSize) }; });
++  ok(/Calibri/.test(taLook.family) && taLook.color === 'rgb(0, 0, 0)' && taLook.size > 8, 'the editor of an empty box looks like what will be typed (the deck\'s font and text colour, handed in from the default run, not the browser\'s)', taLook);
++  ok(b.support === 'native' && /1 new element included/.test(st.note), 'it is drawn natively (no "not drawn exactly" note) and the count line says one new text box is included', { b, note: st.note });
+ 
+   // multi-line English, committed by a press outside
+   await ui.keyboard.type('hello'); await ui.keyboard.press('Enter'); await ui.keyboard.type('second line');
+@@ -4369,6 +4371,142 @@
+   await ui.close();
+ }
+ 
++// ======================================================================================================
++section('Phase 3.2.7-B: shapes (rectangle, rounded rectangle, ellipse, line, arrow): add -> select -> style -> move / resize -> navigate -> remove, in the real UI');
++{
++  const ui = await ctx.newPage(); watch(ui, 'shapes: '); await ui.setViewportSize({ width: 1280, height: 1000 });
++  await openRendered(ui, 'Shapes deck', SEL);
++  const idle = async () => { await ui.waitForTimeout(700); await ui.waitForFunction(() => !document.querySelector('.sf-frame .status') && document.querySelector('.rendered-host .sf-slide') && !document.querySelector('.sf-add-tb').disabled); };
++  const ctl = (k) => ui.locator(`.sf-style-bar [data-ctl="${k}"]`);
++  const film = (i) => ui.locator('.rendered .film-item').nth(i);
++  const outside = async () => { await ui.mouse.click(...(await at(ui, 850, 520))); await ui.waitForTimeout(300); };
++  const status = () => ui.evaluate(() => document.querySelector('.sf-sel-status').textContent);
++  const count = () => ui.evaluate(() => document.querySelectorAll('.rendered-host .sf-slide .sf-el').length);
++  const add = async (k) => { await ui.click(`.sf-add-sh[data-shape="${k}"]`); await idle(); };
++  const bars = () => ui.evaluate(() => Object.fromEntries(['text-color', 'size', 'font', 'bold', 'italic', 'fill', 'line', 'reset'].map((q) => { const e = document.querySelector(`.sf-style-bar [data-ctl="${q}"]`); return [q, { off: e.disabled, v: e.value || '' }]; })));
++  const sel = () => ui.evaluate(() => {
++    const root = document.querySelector('.rendered-host .sf-slide'); const R = root.getBoundingClientRect(); const k = 960 / R.width; const o = root.querySelector('.sf-sel'); if (!o) return null;
++    const n = [...root.querySelectorAll('.sf-el')].find((x) => x.dataset.id === o.dataset.for); const r = n.getBoundingClientRect(); const ob = o.getBoundingClientRect(); const p = [...n.querySelectorAll('svg path')].find((q) => !q.closest('defs'));
++    return { id: n.dataset.id, name: n.dataset.name, kind: n.dataset.kind, support: n.dataset.support || null, box: [Math.round((r.left - R.left) * k), Math.round((r.top - R.top) * k), Math.round(r.width * k), Math.round(r.height * k)], cx: ob.left + ob.width / 2, cy: ob.top + ob.height / 2, ovl: Math.round(Math.max(Math.abs(ob.left - r.left), Math.abs(ob.top - r.top), Math.abs(ob.right - r.right), Math.abs(ob.bottom - r.bottom))), fill: p && p.getAttribute('fill'), stroke: p && p.getAttribute('stroke'), sw: p && p.getAttribute('stroke-width'), marker: !!(p && p.getAttribute('marker-end')), d: p && p.getAttribute('d'), texts: n.querySelectorAll('.sf-text').length };
++  });
++  const state = () => ui.evaluate(() => ({ slides: document.querySelectorAll('.rendered-host .sf-slide').length, sel: document.querySelectorAll('.rendered-host .sf-sel').length, ta: document.querySelectorAll('.sf-text-free').length, ce: document.querySelectorAll('[contenteditable]').length, rm: !document.querySelector('.sf-add-rm').disabled, note: document.querySelector('.rendered .stage-wrap > p.muted.fine:not(.sf-sel-status)').textContent, cur: [...document.querySelectorAll('.rendered .film-item')].findIndex((b) => b.getAttribute('aria-current') === 'true') }));
++  const store = () => ui.evaluate(async () => ({ ls: JSON.stringify({ ...localStorage }), dbs: ((await indexedDB.databases?.()) || []).map((d) => d.name).sort().join() }));
++  const store0 = await store(); const n0 = await count();
++
++  // the action
++  const btns = await ui.evaluate(() => [...document.querySelectorAll('.sf-add .btn')].map((b) => `${b.dataset.act}:${b.dataset.shape || ''}:${b.textContent}:${b.disabled}`));
++  ok(btns.join('|') === 'add-textbox:textbox:Add text box:false|add-shape:rect:Rectangle:false|add-shape:roundRect:Rounded rectangle:false|add-shape:ellipse:Ellipse:false|add-shape:line:Line:false|add-shape:arrow:Arrow:false|remove-added::Remove:true', 'the Rendered tab has Add text box, Rectangle, Rounded rectangle, Ellipse, Line and Arrow buttons (all enabled once the slide is drawn) and a Remove button (disabled: nothing of the preview\'s own is selected)', btns);
++
++  // each shape: one more element, selected, no editor, the right kind, frame and look
++  const made = {}; let prev = null;
++  for (const k of ['rect', 'roundRect', 'ellipse', 'line', 'arrow']) {
++    const before = await count(); await add(k); const s = await sel(); const st = await state(); made[k] = s;
++    const closed = k !== 'line' && k !== 'arrow';
++    ok(s && (await count()) === before + 1 && s.kind === (closed ? 'shape' : 'line') && s.support === 'native' && s.box[2] === (closed ? 240 : 288) && s.box[3] === (closed ? 108 : 0) && s.ovl <= (closed ? 1 : 4) && st.sel === 1 && st.ta === 0 && st.ce === 0 && st.rm, `${k}: one more native element of the right size (${closed ? '240 × 108' : '288 × 0, flat'} pt), selected with the outline on it, no editor, Remove enabled`, { s, st });
++    ok(/^Selected: (Shape|Line) “/.test(await status()) && !/to edit|cannot be edited|Only text/.test(await status()), `${k}: the status line just says what is selected (no editor was tried for a shape)`, await status());
++    ok(prev === null || (s.box[0] > prev.box[0] && s.box[1] > prev.box[1]) || k === 'line', `${k}: it sits a little lower and to the right of the one before, so none hides another`, { prev: prev && prev.box, now: s.box });
++    prev = s;
++  }
++  ok(made.rect.box[0] === 360 && made.rect.box[1] === 216 && /^Rectangle \d+$/.test(made.rect.name) && /^Rounded Rectangle \d+$/.test(made.roundRect.name) && /^Oval \d+$/.test(made.ellipse.name) && /^Straight Connector \d+$/.test(made.line.name) && /^Straight Arrow Connector \d+$/.test(made.arrow.name), 'the first rectangle is centred (360, 216 pt on a 960 × 540 slide); names are PowerPoint\'s: Rectangle, Rounded Rectangle, Oval, Straight Connector, Straight Arrow Connector', Object.fromEntries(Object.entries(made).map(([k, v]) => [k, v.name + '@' + v.box])));
++  ok(/^Selected: Line “Straight Arrow Connector/.test(await status()) && /5 new elements included/.test((await state()).note), 'the status line names the selected element; the count line says five new elements are included', { s: await status(), note: (await state()).note });
++  ok(made.rect.fill === '#4F81BD' && made.rect.stroke === '#385D8A' && made.rect.sw === '1' && made.roundRect.fill === '#4F81BD' && made.ellipse.fill === '#4F81BD', 'a closed shape is filled with the deck\'s accent 1 and outlined in a darker shade of it, 1 pt (theme colours: the fixture\'s accent 1 is #4F81BD)', { rect: [made.rect.fill, made.rect.stroke, made.rect.sw] });
++  ok(made.line.fill === 'none' && made.line.stroke === '#000000' && made.line.sw === '2.25' && !made.line.marker && made.arrow.stroke === '#000000' && made.arrow.sw === '2.25' && made.arrow.marker, 'a line and an arrow are 2.25 pt in the deck\'s text colour, flat, and only the arrow has an end marker (a triangle)', { line: made.line, arrow: made.arrow });
++  ok(/A18 18/.test(made.roundRect.d) && /A120 54/.test(made.ellipse.d) && /^M0 0H240V108H0Z$/.test(made.rect.d), 'the geometry is the preset\'s: a rectangle is a plain box, a rounded rectangle has the default 1/6 radius (18 pt), an ellipse fills its frame', { rr: made.roundRect.d.slice(0, 40), el: made.ellipse.d.slice(0, 30) });
++
++  // style bar: closed shapes take fill and outline, lines take an outline only; text controls are off; Reset only after a change
++  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Rectangle/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + 8, r.top + 8]; }))); await ui.waitForTimeout(300);
++  let s = await sel(); let b = await bars();
++  ok(s && s.name === made.rect.name && !b.fill.off && !b.line.off && b['text-color'].off && b.size.off && b.font.off && b.bold.off && b.italic.off && b.reset.off && b.fill.v === '#4f81bd' && b.line.v === '#385d8a', 'a click on the rectangle selects it again: the bar shows fill #4f81bd and outline #385d8a, the text controls and Reset are off', { s: s && s.name, b });
++  await ctl('fill').fill('#00ff00'); await ctl('line').fill('#ff0000'); await ui.waitForTimeout(400); s = await sel(); b = await bars();
++  ok(s.fill === '#00FF00' && s.stroke === '#FF0000' && !b.reset.off, 'fill and outline colours from the bar are drawn on a new shape, and Reset style becomes available', s);
++  await ctl('reset').click(); await ui.waitForTimeout(400); s = await sel(); b = await bars();
++  ok(s.fill === '#4F81BD' && s.stroke === '#385D8A' && b.reset.off, 'Reset style: the default look is back', s);
++  await ctl('fill').fill('#ffff00'); await ui.waitForTimeout(300);
++  // the arrow: outline only
++  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Straight Arrow/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }))); await ui.waitForTimeout(300);
++  s = await sel(); b = await bars();
++  ok(s && /^Straight Arrow/.test(s.name) && b.fill.off && !b.line.off && b.line.v === '#000000', 'a click on the arrow\'s line selects it: the bar offers the outline (colour #000000) and no fill');
++  await ctl('line').fill('#0000ff'); await ui.waitForTimeout(400); s = await sel();
++  ok(s.stroke === '#0000FF' && s.marker && s.sw === '2.25', 'the arrow\'s colour changes and its head stays', s);
++
++  // move and resize, ordinary records over the element's id
++  const dragBy = async (x, y, dx, dy) => { await ui.mouse.move(x, y); await ui.mouse.down(); await ui.mouse.move(x + dx, y + dy, { steps: 6 }); await ui.mouse.up(); await ui.waitForTimeout(400); };
++  const a0 = await sel(); await dragBy(a0.cx, a0.cy, 40, 50); const a1 = await sel();
++  ok(a1.box[0] > a0.box[0] && a1.box[1] > a0.box[1] && a1.box[3] === 0 && /Moved in the preview/.test(await status()) && a1.ovl <= 4, 'the flat arrow can be dragged (it stays flat) and the status line says so', { a0: a0.box, a1: a1.box });
++  const corner = async (h) => ui.evaluate((h) => { const e = document.querySelector(`.rendered-host .sf-sel .sf-hdl[data-h="${h}"]`).getBoundingClientRect(); return { x: e.left + e.width / 2, y: e.top + e.height / 2 }; }, h);
++  const hE = await corner('ne'); await dragBy(hE.x, hE.y, 50, 30); const a2 = await sel();
++  ok(a2.box[2] > a1.box[2] && a2.box[3] === 0 && a2.marker && a2.ovl <= 4, 'the arrow can be made longer with a corner handle: its height stays 0 and the head stays', { a1: a1.box, a2: a2.box });
++  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Oval/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }))); await ui.waitForTimeout(300);
++  const o0 = await sel(); const hS = await corner('se'); await dragBy(hS.x, hS.y, 40, 30); const o1 = await sel();
++  ok(/^Oval/.test(o0.name) && o1.box[2] > o0.box[2] && o1.box[3] > o0.box[3] && /Resized in the preview/.test(await status()) && o1.ovl <= 1, 'the oval can be resized with its handles', { o0: o0.box, o1: o1.box });
++
++  // navigation: shapes belong to their slide and keep style, place and size
++  const keep = await ui.evaluate(() => [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].filter((x) => /^(Rectangle|Rounded|Oval|Straight)/.test(x.dataset.name)).map((x) => x.dataset.name));
++  await film(1).click(); await idle(); const s2n = await count();
++  ok(!(await ui.evaluate(() => [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].some((x) => /^(Rectangle|Rounded|Oval|Straight)/.test(x.dataset.name)))), 'the other slide has none of slide 1\'s shapes');
++  await add('ellipse'); const t2 = await sel(); ok((await count()) === s2n + 1 && /slide2\.xml#\d+$/.test(t2.id), 'a shape made on slide 2 belongs to slide 2 (its id carries slide2.xml)', t2);
++  await film(0).click(); await idle(); await ui.click('role=tab[name="Slides"]'); await ui.waitForTimeout(300); await ui.click('role=tab[name="Rendered"]'); await idle();
++  const back = await ui.evaluate(() => Object.fromEntries([...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].filter((x) => /^(Rectangle|Rounded|Oval|Straight)/.test(x.dataset.name)).map((x) => { const p = [...x.querySelectorAll('svg path')].find((q) => !q.closest('defs')); const R = document.querySelector('.rendered-host .sf-slide').getBoundingClientRect(); const r = x.getBoundingClientRect(); return [x.dataset.name, { fill: p.getAttribute('fill'), stroke: p.getAttribute('stroke'), w: Math.round(r.width * 960 / R.width) }]; })));
++  const rectName = Object.keys(back).find((n) => /^Rectangle/.test(n)); const arrName = Object.keys(back).find((n) => /^Straight Arrow/.test(n)); const ovName = Object.keys(back).find((n) => /^Oval/.test(n));
++  ok(Object.keys(back).sort().join() === keep.slice().sort().join() && back[rectName].fill === '#FFFF00' && back[arrName].stroke === '#0000FF' && back[ovName].w === o1.box[2], 'back on slide 1 (and after the Slides tab): the same five shapes, with the yellow fill, the blue arrow and the resized oval', back);
++
++  // Remove: only what the preview added
++  await ui.mouse.click(...(await at(ui, 100, 320))); await ui.waitForTimeout(300); const fileSel = await sel();
++  ok(fileSel && !/^(Rectangle|Rounded|Oval|Straight|TextBox)/.test(fileSel.name) && (await ui.evaluate(() => document.querySelector('.sf-add-rm').disabled)), 'with one of the file\'s own elements selected, Remove is disabled: the file\'s elements are never removed', fileSel && fileSel.name);
++  const nBefore = await count(); await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Rectangle/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + 8, r.top + 8]; }))); await ui.waitForTimeout(300);
++  await ui.click('.sf-add-rm'); await idle(); const st3 = await state();
++  ok((await count()) === nBefore - 1 && st3.sel === 0 && !st3.rm && /Removed “Rectangle \d+”\./.test(await status()), 'Remove deletes the selected rectangle: one element less, nothing selected, Remove off, the status line says what was removed', { n: await count(), s: await status() });
++  await add('rect'); const again = await sel(); ok(again && /^Rectangle \d+$/.test(again.name) && again.fill === '#4F81BD', 'a shape made after one was removed is a fresh one with the default look (nothing of the removed one is left)', again);
++
++  await ui.mouse.dblclick(again.cx, again.cy); await ui.waitForTimeout(300); const stD = await state();
++  ok(stD.ta === 0 && stD.ce === 0 && /no drawn text to edit/.test(await status()), 'a double click on a new shape opens no editor: it has no text (shapes carry no text yet)', await status());
++  // a text box and a shape together; the text box is removed with Remove too
++  await ui.click('.sf-add-tb'); await idle(); await ui.keyboard.type('label'); await add('rect');
++  const tb = await ui.evaluate(() => [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].filter((x) => /^TextBox/.test(x.dataset.name)).map((x) => x.textContent.replace(/\u200b/g, '')));
++  ok(tb.length === 1 && tb[0] === 'label' && /^Rectangle/.test((await sel()).name), 'adding a shape while a text box is being edited keeps the typed text and selects the new shape', tb);
++  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^TextBox/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + 6, r.bottom - 6]; }))); await ui.waitForTimeout(300);
++  const nT = await count(); await ui.click('.sf-add-rm'); await idle(); ok((await count()) === nT - 1 && /Removed “TextBox/.test(await status()), 'Remove deletes a text box as well', await status());
++
++  // the file: the slide XML is untouched, the scene walks the shapes as plain sp / cxnSp, the edit-state keeps them apart from edits
++  const model = await ui.evaluate(async () => {
++    const parser = await import('/js/pptx/parser.js'); const sc = await import('/js/model/scene.js'); const es = await import('/js/model/edit-state.js');
++    const buf = new Uint8Array(await (await fetch('/tests/fixtures/p321-selection.pptx')).arrayBuffer());
++    const parsed = await parser.parsePptx(buf); const ser = (d) => new XMLSerializer().serializeToString(d);
++    const s0 = await sc.buildScene(parsed, 0); const xml0 = ser(s0.doc); const n0 = s0.elements.length;
++    const edits = es.createEditState(); const ids = {}; for (const k of ['rect', 'roundRect', 'ellipse', 'line', 'arrow', 'textbox']) ids[k] = edits.addElement(s0, k);
++    const s1 = await sc.buildScene(parsed, 0, { added: edits.addedFor(s0.part) });
++    const el = (k) => s1.byId.get(ids[k].id); const kinds = Object.fromEntries(Object.keys(ids).map((k) => [k, el(k).added]));
++    const out = { sameXml: ser(s1.doc) === xml0, plus: s1.elements.length === n0 + 6, kinds: JSON.stringify(kinds) === JSON.stringify({ rect: 'rect', roundRect: 'roundRect', ellipse: 'ellipse', line: 'line', arrow: 'arrow', textbox: 'textbox' }),
++      tags: [el('rect').tag, el('roundRect').tag, el('ellipse').tag, el('line').tag, el('arrow').tag].join(), geoms: [el('rect').geom, el('roundRect').geom, el('ellipse').geom, el('line').geom, el('arrow').geom].join(), flat: el('line').xfrm.h === 0 && el('arrow').xfrm.h === 0 && el('line').xfrm.w > 0, detached: Object.keys(ids).every((k) => !s1.doc.contains(el(k).el)),
++      idsUnique: new Set(s1.elements.map((e) => e.id)).size === s1.elements.length, textOnly: edits.isAddedText(ids.textbox.id) && !edits.isAddedText(ids.rect.id) && !edits.isAddedText(ids.arrow.id), refuse: [edits.setAddedText(ids.rect.id, ['x']).ok, edits.addElement(s0, 'star').ok, edits.addElement(s0, undefined).ok === true], looks: edits.addedLook(s1, ids.rect.id) === null,
++      listEmpty: edits.list().length === 0 && edits.size === 0 };
++    edits.commit(s1, ids.arrow.id, 10, 5); out.hadMove = edits.has(ids.arrow.id); edits.removeAdded(ids.arrow.id); out.noLeftover = out.hadMove && !edits.has(ids.arrow.id) && !edits.isAdded(ids.arrow.id);
++    const left = edits.addedFor(s0.part).length; edits.clear(); out.cleared = left === 6 + 0 && edits.addedFor(s0.part).length === 0;
++    out.fresh = es.editStateOf(parsed).addedFor(s0.part).length === 0;
++    return out;
++  });
++  ok(model.sameXml && model.plus && model.detached && model.idsUnique, 'the PPTX XML is untouched with five shapes and a text box in the scene; they are six more elements with unique ids, built from detached elements', model);
++  ok(model.kinds && model.tags === 'sp,sp,sp,cxnSp,cxnSp' && model.geoms === 'rect,roundRect,ellipse,line,straightConnector1' && model.flat, 'the scene walks them as ordinary elements: sp with rect / roundRect / ellipse, cxnSp with line / straightConnector1, the lines flat; `added` carries the kind', model);
++  ok(model.textOnly && model.refuse[0] === false && model.refuse[1] === false && model.refuse[2] === true && model.looks && model.listEmpty && model.noLeftover && model.cleared && model.fresh, 'edit-state: only a text box has text of its own (a shape refuses setAddedText), an unknown kind is refused, a box is not an edit record, removeAdded() takes the element\'s move / resize / style records with it, clear() forgets all, a new parse starts with none', model);
++  const st1 = await store(); ok(st1.ls === store0.ls && st1.dbs === store0.dbs, 'adding, styling, moving, resizing and removing shapes wrote nothing to localStorage or IndexedDB');
++
++  // closing: nothing is kept, no listener is left
++  await ui.evaluate(() => {
++    const net = new Map(); globalThis.__net = net;
++    for (const T of [document, window]) { const nm = T === document ? 'doc' : 'win'; const add = T.addEventListener.bind(T); const rem = T.removeEventListener.bind(T); T.addEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) + 1); return add(a, f, o); }; T.removeEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) - 1); return rem(a, f, o); }; }
++  });
++  await ui.click('.modal [aria-label="Close"]'); await ui.waitForTimeout(300);
++  const netNow = () => ui.evaluate(() => [...globalThis.__net].filter(([, v]) => v !== 0).map(([k, v]) => `${k}=${v}`).join());
++  const net0 = await netNow();
++  const reopen = async () => { await ui.click('.tpl:has-text("Shapes deck") >> text=Preview'); await ui.waitForSelector('.film-item'); await ui.click('role=tab[name="Rendered"]'); await ui.waitForSelector('.rendered-host .sf-slide .sf-el'); await idle(); };
++  await reopen(); ok((await count()) === n0 && (await state()).rm === false, 'reopened: the deck is the file again, none of the shapes');
++  await add('arrow'); await add('ellipse'); const sd = await sel(); await ui.mouse.move(sd.cx, sd.cy); await ui.mouse.down(); await ui.mouse.move(sd.cx + 30, sd.cy + 20, { steps: 4 });
++  await ui.click('.modal [aria-label="Close"]', { force: true }).catch(() => {}); await ui.mouse.up().catch(() => {}); await ui.waitForTimeout(400);
++  ok(await netNow() === net0, 'closing the dialog (even in the middle of a drag) leaves no listener on document or window', { net0, now: await netNow() });
++  await reopen(); ok((await count()) === n0, 'and the next opening has none of the shapes');
++  await ui.close();
++}
++
+ // ======================================================================================================
+ section('page health');
+ ok(consoleErrors.length === 0, 'no console errors / CSP violations during the run', consoleErrors.slice(0, 5));
