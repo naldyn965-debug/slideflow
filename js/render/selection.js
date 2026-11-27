@@ -87,6 +87,9 @@
 //   - dispose() leaves drawn styles as they are, like drawn texts (they are the drawn slide's, not this controller's); the next controller draws them again from the edit-state.
 import { MIN_PT, FLAT_PT, MAX_TIMES, SAME_PT } from '../model/resize-limits.js';
 import { textEditability, startTextEdit } from './text-edit.js';
+import { startFreeEdit } from './textbox-edit.js'; // Phase 3.2.7-A: the editor of a new text box
+import { isBlankText } from '../model/textbox.js';
+import { fontStack } from './fonts.js';
 const E = 12700;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']; // Phase 3.2.2-A: the resize handles (positioned by css/render.css); they take no pointer events: a press on one is found by geometry (handleAt, Phase 3.2.4-A)
@@ -354,6 +357,19 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
     if (editing) return { ok: true };
     if (drawing) { const v = { ok: false, reason: 'style-pending', message: 'A style change is still being drawn. Try again in a moment.' }; onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; } // (3.2.6-C) the draw replaces the text box
     finishDrag(false); setCursor('');
+    if (edits && edits.isAddedText && edits.isAddedText(id)) { // Phase 3.2.7-A: a new text box is edited with its own editor (its text structure is not a file's); a resized one is refused like any other shape (its text is stretched)
+      const node = handle.nodes.get(id); if (!node) return { ok: false, reason: 'no-text', message: 'This text box is not drawn.' };
+      if (sizes.get(id)) { const v = { ok: false, reason: 'resized', message: 'A resized text shape cannot be edited yet: its text is stretched.' }; onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; }
+      const lk = edits.addedLook ? edits.addedLook(scene, id) : null; // what typing into an empty box looks like (its default run, style record applied)
+      const look = lk ? { color: lk.hex ? `#${lk.hex}` : '', family: fontStack(lk.font, lk.rtl), size: lk.sz, bold: lk.b, italic: lk.i } : null;
+      const session = startFreeEdit(node, { point: pt, texts: edits.getAdded(id).paras.map((p) => p.text), look, onEnd: (why, draft) => afterEdit(id, why, draft) });
+      if (!session) return { ok: false, reason: 'no-text', message: 'This text box has no text area.' };
+      editing = { id, session };
+      node.style.touchAction = 'auto'; node.style.cursor = 'text';
+      outline?.classList.add('sf-editing');
+      onEdit?.({ id, phase: 'start', locked: 0, added: true });
+      return { ok: true };
+    }
     const node = handle.nodes.get(id); const v = textEditability(scene.byId.get(id), { node, resized: !!sizes.get(id) });
     if (!v.ok) { onEdit?.({ id, phase: 'refused', reason: v.reason, message: v.message }); return v; }
     const e = scene.byId.get(id);
@@ -371,14 +387,18 @@ export function attachSelection(handle, scene, { onChange, onMove, onResize, onE
    */
   function afterEdit(id, why, draft) {
     editing = null; let committed = false; let changed = false;
-    if (draft && edits) {
+    let box = null; // Phase 3.2.7-A: set for a new text box: { empty } = what its record holds now
+    if (edits && edits.isAddedText && edits.isAddedText(id)) {
+      if (draft && draft.free) { const r = edits.setAddedText(id, draft.texts); committed = r.ok; changed = r.ok && r.changed; }
+      const rec = edits.getAdded(id); box = { empty: !rec || isBlankText(rec.paras.map((p) => p.text)) };
+    } else if (draft && edits) {
       const r = edits.commitText(scene, id, draft); committed = r.ok; changed = r.ok && r.changed;
       if (changed) handle.setText?.(id, edits.effectiveText(scene.byId.get(id)), true, edits.hasText(id)); // (a shape back at the file's text is drawn as the file has it)
     }
     const node = handle.nodes.get(id);
     if (node && selected === id) { node.style.touchAction = 'none'; node.style.cursor = 'move'; }
     outline?.classList.remove('sf-editing');
-    onEdit?.({ id, phase: 'end', reason: why, committed, changed, skipped: !!(draft && draft.skipped) });
+    onEdit?.({ id, phase: 'end', reason: why, committed, changed, skipped: !!(draft && draft.skipped), ...(box ? { added: true, empty: box.empty } : {}) });
   }
   /** End text edit mode (the original text is put back). */
   function endEdit(why = 'api') { if (editing) editing.session.end(why); }

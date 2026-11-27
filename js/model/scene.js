@@ -11,6 +11,7 @@
 //   approximated drawn, but something is simplified (the reasons say what)
 //   opaque       not drawn from its content: a placeholder box stands in; the XML is untouched and the element can still be located
 import { kid, kids, desc, readXml, readRels, placeholderOf, normType } from '../pptx/parser.js';
+import { textBoxTree } from './textbox.js';
 import { loadMaster, loadLayout, phShape, clrMapOf, hidesMasterShapes, DEFAULT_CLRMAP, EMPTY_THEME } from '../pptx/design.js';
 
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -263,18 +264,19 @@ function classify(e) {
 }
 
 // ---------- layers ----------
-function layerElements(ctx, part, doc, origin, rels, layoutDoc, masterDoc, z) {
+function layerElements(ctx, part, doc, origin, rels, layoutDoc, masterDoc, z, added = null) {
   const tree = desc(doc, 'spTree')[0];
   const st = { part, origin, rendered: true, branch: null, rels, layoutDoc, masterDoc, ids: new Set(), byId: new Map(), unplaced: [], z, basePath: [] };
   const out = [];
   if (tree) walk(null, st, tree, null, IDENTITY, out);
+  if (added && added.length) { const n0 = out.length; walk(null, st, textBoxTree(doc, added), null, IDENTITY, out); const kinds = new Map(added.map((r) => [String(r.xmlId), r.kind || 'textbox'])); for (const e of out.slice(n0)) if (e.depth === 0) e.added = kinds.get(String(e.id).split('#').pop()) || 'textbox'; } // Phase 3.2.7-A: text boxes made in the preview, walked like the file's own shapes, on top of them
   // Template placeholders are inheritance sources, not slide content: they are never drawn on a slide, so they are left out of the layer.
   const keep = origin === 'slide' ? out : out.filter((e) => !(e.ph && e.depth === 0));
   return { origin, part, rels, elements: keep, byId: st.byId, unplaced: st.unplaced };
 }
 
 /** Build the scene of one slide. `index` is the 0-based position in parsed.slides. */
-export async function buildScene(parsed, index) {
+export async function buildScene(parsed, index, { added = null } = {}) {
   const ctx = await deckContext(parsed);
   const ps = parsed.slides[index];
   if (!ps) throw new RangeError(`No slide at index ${index}`);
@@ -296,7 +298,7 @@ export async function buildScene(parsed, index) {
     if (master?.doc && !hidesMasterShapes(layout?.doc)) layers.push(layerElements(ctx, master.path, master.doc, 'master', master.rels, null, null, z));
     if (layout?.doc) layers.push(layerElements(ctx, layout.path, layout.doc, 'layout', layout.rels, layout.doc, master?.doc || null, z));
   }
-  const slideLayer = layerElements(ctx, ps.part, doc, 'slide', rels, layout?.doc || null, master?.doc || null, z);
+  const slideLayer = layerElements(ctx, ps.part, doc, 'slide', rels, layout?.doc || null, master?.doc || null, z, added);
   layers.push(slideLayer);
 
   // background: the first <p:bg> found on slide -> layout -> master

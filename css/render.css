@@ -46,3 +46,7 @@
 .sf-badge[data-support="native"] { color: #2e7d32; }
 .sf-badge[data-support="approximated"] { color: #b26a00; }
 .sf-badge[data-support="opaque"] { color: #b3261e; }
+
+/* Phase 3.2.7-A: the textarea over a new text box while its text is edited (font, colour and padding are copied to it by the editor). */
+.sf-text-free { position: absolute; left: 0; top: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none; overflow: hidden; background: transparent; z-index: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sf-text-in.sf-text-covered { visibility: hidden; }

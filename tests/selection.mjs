@@ -1364,7 +1364,7 @@ let geoRows = []; let geoRects0 = null; let geoSkipped = [];
   // the edit-state module is data only
   const code = readFileSync(path.join(ROOT, 'js/model/edit-state.js'), 'utf8').replace(/\/\/.*$/gm, '');
   ok(!/\b(document|window|localStorage|sessionStorage|indexedDB|fetch|XMLSerializer|DOMParser|setAttribute|innerHTML|JSZip)\b/.test(code), 'edit-state.js touches no DOM, storage, network, XML serializer or zip');
-  ok(!/\.(world|xfrm|el)\s*[-+*/]?=[^=]|\bdoc\b|\.ownerDocument|byId\.(set|delete|clear)/.test(code) && [...code.matchAll(/^import .* from '(.*)';$/gm)].map((m) => m[1]).join() === './scene.js,./resize-limits.js' && !/\bimport\b|\bfetch\b|document|window/.test(readFileSync(path.join(ROOT, 'js/model/resize-limits.js'), 'utf8').replace(/\/\/.*$/gm, '')), 'edit-state.js never assigns to the Scene Model or an XML node, and imports nothing but the matrix helpers of scene.js and the constants of resize-limits.js (which imports nothing)');
+  ok(!/\.(world|xfrm|el)\s*[-+*/]?=[^=]|\bdoc\b|\.ownerDocument|byId\.(set|delete|clear)/.test(code) && [...code.matchAll(/^import .* from '(.*)';$/gm)].map((m) => m[1]).join() === './scene.js,./resize-limits.js,./textbox.js' && !/\bimport\b|\bfetch\b|document|window/.test(readFileSync(path.join(ROOT, 'js/model/resize-limits.js'), 'utf8').replace(/\/\/.*$/gm, '')), 'edit-state.js never assigns to the Scene Model or an XML node, and imports nothing but the matrix helpers of scene.js, the constants of resize-limits.js and the pure helpers of textbox.js (the last two import nothing)');
   const sel = readFileSync(path.join(ROOT, 'js/render/selection.js'), 'utf8').replace(/\/\/.*$/gm, '');
   ok(!/\.xfrm\b|\.localDelta\b|\.position\.[xy]\b|\.origin\.[xy]\b/.test(sel), 'selection.js hands the offset to the edit-state and never computes or writes a local coordinate itself');
   const rd = readFileSync(path.join(ROOT, 'js/ui/rendered.js'), 'utf8').replace(/\/\/.*$/gm, '');
@@ -4198,6 +4198,312 @@ section('Phase 3.2.6-E: integration audit (upload -> select -> text edit -> styl
   await ui.waitForSelector('.modal #tpl-name'); await ui.fill('#tpl-name', 'Audit E deck 2'); await ui.click('.modal >> text=Save to library');
   await ui.waitForFunction(() => [...document.querySelectorAll('.tpl h3')].some((x) => x.textContent === 'Audit E deck 2')); await reopen('Audit E deck 2');
   g = await page_(); ok(g.slides === 1 && g.sel === 0 && g.idle && (await snap('solid')).size === 20 && (await snap('solid')).color === '112233', 'a second deck opens clean: file values only, nothing from the first deck');
+  await ui.close();
+}
+
+// ======================================================================================================
+section('Phase 3.2.7-A: text box creation (Add text box -> edit -> style -> move / resize -> navigate -> cancel / empty / cleanup), in the real UI');
+{
+  const ui = await ctx.newPage(); watch(ui, 'text box: '); await ui.setViewportSize({ width: 1280, height: 1000 });
+  await openRendered(ui, 'Text box deck', SEL);
+  const idle = async () => { await ui.waitForTimeout(700); await ui.waitForFunction(() => !document.querySelector('.sf-frame .status') && document.querySelector('.rendered-host .sf-slide') && !document.querySelector('.sf-add-tb').disabled); };
+  const ctl = (k) => ui.locator(`.sf-style-bar [data-ctl="${k}"]`);
+  const outside = async () => { await ui.mouse.click(...(await at(ui, 850, 520))); await idle(); };
+  const film = (i) => ui.locator('.rendered .film-item').nth(i);
+  const addBox = async () => { await ui.click('.sf-add-tb'); await idle(); };
+  const status = () => ui.evaluate(() => document.querySelector('.sf-sel-status').textContent);
+  const count = () => ui.evaluate(() => document.querySelectorAll('.rendered-host .sf-slide .sf-el').length);
+  const taOf = () => ui.evaluate(() => { const t = document.querySelector('.sf-text-free'); return t ? { value: t.value, focused: document.activeElement === t, dir: t.getAttribute('dir') } : null; });
+  const boxes = () => ui.evaluate(() => {
+    const root = document.querySelector('.rendered-host .sf-slide'); const R = root.getBoundingClientRect(); const k = 960 / R.width;
+    return [...root.querySelectorAll('.sf-el')].filter((n) => /^TextBox/.test(n.dataset.name)).map((n) => { const r = n.getBoundingClientRect(); const run = n.querySelector('.sf-r:not([data-ph])'); const c = run && getComputedStyle(run); const sp = n.querySelector(':scope > svg.sf-geo path');
+      return { id: n.dataset.id, name: n.dataset.name, box: [Math.round((r.left - R.left) * k), Math.round((r.top - R.top) * k), Math.round(r.width * k), Math.round(r.height * k)], cx: r.left + r.width / 2, cy: r.top + r.height / 2, px: r.left + 6, py: r.bottom - 6, paras: [...n.querySelectorAll('.sf-p')].map((p) => ({ dir: p.dir, align: getComputedStyle(p).textAlign, text: p.textContent.replace(/\u200b/g, '') })), bold: c ? Number(c.fontWeight) >= 700 : null, color: c ? c.color : null, size: c ? Math.round(parseFloat(c.fontSize) / parseFloat(getComputedStyle(root).getPropertyValue('--u'))) : null, support: n.dataset.support || null, fill: sp ? sp.getAttribute('fill') : null }; });
+  });
+  const last = async () => (await boxes()).slice(-1)[0];
+  const state = () => ui.evaluate(() => ({ slides: document.querySelectorAll('.rendered-host .sf-slide').length, sel: document.querySelectorAll('.rendered-host .sf-sel').length, ta: document.querySelectorAll('.sf-text-free').length, ce: document.querySelectorAll('[contenteditable]').length, note: document.querySelector('.rendered .stage-wrap > p.muted.fine:not(.sf-sel-status)').textContent, cur: [...document.querySelectorAll('.rendered .film-item')].findIndex((b) => b.getAttribute('aria-current') === 'true') }));
+  const store = () => ui.evaluate(async () => ({ ls: JSON.stringify({ ...localStorage }), dbs: ((await indexedDB.databases?.()) || []).map((d) => d.name).sort().join() }));
+  const store0 = await store(); const n0 = await count();
+
+  // the action
+  const btn = await ui.evaluate(() => { const b = document.querySelector('.sf-add-tb'); return b ? { text: b.textContent, disabled: b.disabled, type: b.type } : null; });
+  ok(btn && btn.text === 'Add text box' && !btn.disabled && btn.type === 'button' && (await boxes()).length === 0, 'the Rendered tab has an "Add text box" button, enabled once the slide is drawn; no box yet', btn);
+
+  // create: selected, the editor open and focused, default frame 40% of the slide wide, centred, one line high
+  await ui.click('.sf-add-tb'); await idle();
+  let b = (await boxes())[0]; let ta = await taOf(); let st = await state();
+  ok(b && /^TextBox \d+$/.test(b.name) && (await count()) === n0 + 1 && b.box.join() === '288,216,384,65', 'Add text box: one more element on the slide, "TextBox N", 384 × 65 pt (40% of the slide wide), centred horizontally at 40% of the height', b);
+  ok(ta && ta.value === '' && ta.focused && ta.dir === 'auto' && st.ta === 1 && st.sel === 1 && /^Editing the text of Text box “TextBox/.test(await status()), 'it is selected and its text editor is open, empty and focused (dir="auto"), the status line says so', { ta, st, s: await status() });
+  const taLook = await ui.evaluate(() => { const t = document.querySelector('.sf-text-free'); const c = getComputedStyle(t); return { family: c.fontFamily, color: c.color, size: parseFloat(c.fontSize) }; });
+  ok(/Calibri/.test(taLook.family) && taLook.color === 'rgb(0, 0, 0)' && taLook.size > 8, 'the editor of an empty box looks like what will be typed (the deck\'s font and text colour, handed in from the default run, not the browser\'s)', taLook);
+  ok(b.support === 'native' && /1 new element included/.test(st.note), 'it is drawn natively (no "not drawn exactly" note) and the count line says one new text box is included', { b, note: st.note });
+
+  // multi-line English, committed by a press outside
+  await ui.keyboard.type('hello'); await ui.keyboard.press('Enter'); await ui.keyboard.type('second line');
+  ok((await taOf()).value === 'hello\nsecond line', 'Enter makes a new line while typing');
+  await outside(); b = await last(); st = await state();
+  ok(b.paras.length === 2 && b.paras[0].text === 'hello' && b.paras[1].text === 'second line' && b.paras.every((p) => p.dir === 'ltr' && p.align === 'left') && st.ta === 0 && st.sel === 0 && (await boxes()).length === 1, 'a press outside keeps the text: two paragraphs, left to right, left aligned; the editor is gone and nothing is selected', { b, st });
+
+  // edit it again: double click opens the editor with the text; Escape throws the new typing away; a press outside keeps it
+  const dbl = async (x, y) => { await ui.mouse.click(x, y); await ui.waitForTimeout(150); await ui.mouse.dblclick(x, y); await ui.waitForTimeout(250); };
+  await dbl(b.cx, b.cy); ta = await taOf();
+  ok(ta && ta.value === 'hello\nsecond line' && ta.focused, 'a double click on the box opens the editor with its text (caret at the end)', ta);
+  await ui.keyboard.type(' XX'); await ui.keyboard.press('Escape'); await idle(); b = await last();
+  ok(b.paras.map((p) => p.text).join('|') === 'hello|second line' && (await state()).ta === 0 && (await boxes()).length === 1, 'Escape while editing a box that has text: the typing is thrown away, the box keeps its text and stays');
+  await dbl(b.cx, b.cy); await ui.keyboard.type(' more'); await outside(); b = await last();
+  ok(b.paras.map((p) => p.text).join('|') === 'hello|second line more', 'a press outside keeps the added typing');
+
+  // keyboard isolation: arrows and letters stay in the textarea
+  await dbl(b.cx, b.cy); await ui.keyboard.press('ArrowRight'); await ui.keyboard.press('ArrowDown'); await ui.keyboard.press('ArrowLeft'); await ui.waitForTimeout(150);
+  st = await state(); ok(st.cur === 0 && st.ta === 1, 'arrow keys in the editor move the caret and do not change the slide', st);
+  await ui.keyboard.press('Escape'); await idle();
+
+  // Arabic / RTL and mixed lines, an empty line in the middle
+  await addBox(); await ui.keyboard.type('مرحبا بالعالم'); await ui.keyboard.press('Enter'); await ui.keyboard.type('hello'); await ui.keyboard.press('Enter'); await ui.keyboard.type('123 مرحبا'); await ui.keyboard.press('Enter'); await ui.keyboard.press('Enter'); await ui.keyboard.type('end');
+  await outside(); const ar = await last();
+  ok(ar.paras.length === 5 && ar.paras[0].dir === 'rtl' && ar.paras[0].align === 'right' && ar.paras[0].text === 'مرحبا بالعالم' && ar.paras[1].dir === 'ltr' && ar.paras[2].dir === 'rtl' && ar.paras[2].text === '123 مرحبا' && ar.paras[3].text === '' && ar.paras[4].text === 'end', 'Arabic: a paragraph takes its direction from its first strong letter (right to left, right aligned); English left to right; digits first then Arabic is right to left; an empty line is kept', ar.paras);
+  ok(ar.id !== b.id && ar.box[0] > b.box[0] && ar.box[1] > b.box[1], 'a second box gets its own id and sits a little lower and to the right of the first, so it does not hide it', { first: b.box, second: ar.box });
+
+  // focus leaving the editor (Tab) ends the edit and keeps the text, like a press outside
+  await addBox(); await ui.keyboard.type('tabbed'); await ui.keyboard.press('Tab'); await idle(); const tabbed = await last();
+  ok(tabbed.paras[0].text === 'tabbed' && (await state()).ta === 0, 'Tab leaves the editor: the edit ends and the text is kept');
+
+  // adding while another box is being edited: its draft is kept, the new box is edited
+  const before = (await boxes()).length; const e1 = (await boxes()).find((x) => x.paras[0]?.text === 'hello'); await ui.mouse.click(e1.px, e1.py); await ui.waitForTimeout(150); await ui.mouse.dblclick(e1.px, e1.py); await ui.waitForTimeout(250); await ui.keyboard.press('End'); await ui.keyboard.type('+');
+  await ui.click('.sf-add-tb'); await idle(); const after = await boxes();
+  ok(after.length === before + 1 && after.some((x) => x.paras[x.paras.length - 1].text === 'second line more+'), 'Add text box while another box is being edited: its draft is kept ("second line more+") and the new box is made', { before, after: after.length });
+  ok((await taOf()) !== null && (await taOf()).value === '' && (await state()).ta === 1, 'and the new box is the one being edited'); await ui.keyboard.press('Escape'); await idle();
+
+  // cancel and empty: nothing is left behind
+  const nHere = await count();
+  await addBox(); await ui.keyboard.press('Escape'); await idle(); st = await state();
+  ok((await count()) === nHere && st.ta === 0 && st.sel === 0 && /Empty text box removed/.test(await status()), 'Escape on a box that never had text removes it (and says so)', { c: await count(), s: await status() });
+  await addBox(); await ui.keyboard.type('draft'); await ui.keyboard.press('Escape'); await idle();
+  ok((await count()) === nHere, 'Escape after typing in a box that never had text: the typing is thrown away and the box removed');
+  await addBox(); await outside(); ok((await count()) === nHere && /Empty text box removed/.test(await status()), 'a press outside with nothing typed removes the box');
+  await addBox(); await ui.keyboard.type('   '); await ui.keyboard.press('Enter'); await ui.keyboard.type('  \u200b'); await outside(); ok((await count()) === nHere, 'text of nothing but spaces, line breaks and zero-width characters counts as empty: the box is removed');
+  await ui.click('.sf-add-tb'); await ui.waitForTimeout(40); const early = await count(); await idle();
+  ok(early >= nHere && (await count()) === nHere + 1 && (await taOf()) !== null, 'a box made, nothing typed: it stays while it is being edited'); await outside();
+  // a box emptied on purpose is removed too
+  const kept = await boxes(); const k1 = kept[0]; await dbl(k1.px, k1.py); await ui.keyboard.press('Control+a'); await ui.keyboard.press('Delete'); await outside();
+  ok((await boxes()).length === kept.length - 1 && !(await boxes()).some((x) => x.id === k1.id), 'a box whose text is all deleted is removed when the edit ends');
+
+  // style bar: Bold clicked right after typing keeps the text AND bolds it (the redraw waits for the press)
+  await addBox(); await ui.keyboard.type('bold me'); await ctl('bold').click({ timeout: 3000, delay: 250 }); await idle(); b = await last(); // (a press that lasts: the redraw of the box must not begin under the pointer)
+  ok(b.paras[0].text === 'bold me' && b.bold === true && (await state()).ta === 0, 'Bold clicked while typing in a new box: the text is kept, bold, the editor closed, the box still selected', b);
+  ok(/Selected: Text box/.test(await status()) && !(await ctl('bold').isDisabled()) && (await ctl('bold').getAttribute('aria-pressed')) === 'true', 'the bar shows the box\'s style (Bold pressed) and is enabled');
+  await ctl('text-color').fill('#00aa00'); await ctl('size').fill('30'); await ctl('size').press('Enter'); await ctl('fill').fill('#fff2cc'); await idle(); b = await last();
+  ok(b.color === 'rgb(0, 170, 0)' && b.bold && b.fill === '#FFF2CC', 'colour, size and fill from the bar apply to a new box like to any shape', b);
+  await dbl(b.cx, b.cy); await ui.keyboard.press('End'); await ui.keyboard.type('!'); await outside(); b = await last();
+  ok(b.paras[0].text === 'bold me!' && b.bold && b.color === 'rgb(0, 170, 0)' && b.fill === '#FFF2CC', 'editing the text again keeps the style (the box is drawn again from its record with its style record on top)', b);
+  await ui.click('.sf-add-tb'); await idle(); // a box made on a slide that already has a styled one: the styles are still being drawn for a moment, the editor opens as soon as they are
+  ok((await taOf()) !== null && (await taOf()).focused && (await state()).ta === 1, 'Add text box on a slide with a styled box: the new box\'s editor opens too (it waits for the styles to be drawn)'); await ui.keyboard.press('Escape'); await idle();
+  await ui.mouse.click(b.cx, b.cy); await ui.waitForTimeout(200); await ctl('reset').click(); await idle(); b = await last();
+  ok(!b.bold && b.paras[0].text === 'bold me!' && b.color !== 'rgb(0, 170, 0)' && b.fill !== '#FFF2CC', 'Reset style: the box is back to the default look, its text stays', b);
+
+  // move and resize: ordinary edit-state records; a resized box is not edited (its text is stretched), like every shape
+  const dragBy = async (x, y, dx, dy) => { await ui.mouse.move(x, y); await ui.mouse.down(); await ui.mouse.move(x + dx, y + dy, { steps: 6 }); await ui.mouse.up(); await ui.waitForTimeout(400); };
+  await ui.mouse.click(b.cx, b.cy); await ui.waitForTimeout(200); await dragBy(b.cx, b.cy, 60, 40); const moved = await last();
+  ok((moved.box[0] !== b.box[0] || moved.box[1] !== b.box[1]) && moved.paras[0].text === 'bold me!' && /Moved in the preview/.test(await status()), 'a new box can be dragged: moved, text intact, the status line says so', { was: b.box, now: moved.box });
+  const hd = await ui.evaluate(() => { const r = document.querySelector('.rendered-host .sf-sel .sf-hdl[data-h="se"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await dragBy(hd.x, hd.y, 40, 20); const sized = await last();
+  ok(sized.box[2] > moved.box[2] && sized.box[3] > moved.box[3] && /Resized in the preview/.test(await status()), 'a new box can be resized with its handles', { was: moved.box, now: sized.box });
+  await ui.mouse.dblclick(sized.cx, sized.cy); await ui.waitForTimeout(300);
+  ok((await state()).ta === 0 && /resized text shape cannot be edited/i.test(await status()), 'a resized box is refused for text editing with the same message as every other shape', await status());
+
+  // navigation: boxes live on their slide, come back with text, style, place and size
+  await film(1).click(); await idle(); const s2 = await boxes(); const s2n = await count();
+  ok(s2.length === 0, 'the other slide has none of slide 1\'s boxes');
+  await addBox(); await ui.keyboard.type('slide two'); await outside(); const t2 = await last();
+  ok((await count()) === s2n + 1 && t2.paras[0].text === 'slide two' && /slide2\.xml#\d+$/.test(t2.id), 'a box made on slide 2 belongs to slide 2 (its id carries slide2.xml)', t2);
+  await film(0).click(); await idle(); const back = await boxes(); const bb = back.find((x) => x.paras[0] && x.paras[0].text === 'bold me!');
+  ok(back.length === (await boxes()).length && back.every((x) => !/slide2/.test(x.id)) && bb && bb.box.join() === sized.box.join(), 'back on slide 1: its boxes only, the moved and resized one at the same place and size, with its text', { n: back.length, bb: bb && bb.box, sized: sized.box });
+  await ui.click('role=tab[name="Slides"]'); await ui.waitForTimeout(300); await ui.click('role=tab[name="Rendered"]'); await idle(); const tab = await boxes();
+  ok(tab.length === back.length && tab.some((x) => x.paras[0]?.text === 'bold me!' && x.box.join() === sized.box.join()), 'Slides tab and back: the boxes are all still there');
+
+  // nothing written anywhere
+  const st1 = await store(); ok(st1.ls === store0.ls && st1.dbs === store0.dbs, 'creating, editing, styling and moving boxes wrote nothing to localStorage or IndexedDB');
+
+  // the file is untouched: a scene with the records differs from the file's only by the added elements (page side, on a real parse)
+  const model = await ui.evaluate(async () => {
+    const parser = await import('/js/pptx/parser.js'); const sc = await import('/js/model/scene.js'); const es = await import('/js/model/edit-state.js');
+    const buf = new Uint8Array(await (await fetch('/tests/fixtures/p321-selection.pptx')).arrayBuffer());
+    const parsed = await parser.parsePptx(buf); const ser = (d) => new XMLSerializer().serializeToString(d);
+    const s0 = await sc.buildScene(parsed, 0); const xml0 = ser(s0.doc); const ids0 = s0.elements.map((e) => e.id); const cnt0 = sc.countXmlElements(s0.doc);
+    const edits = es.createEditState(); const r = edits.addTextBox(s0); edits.setAddedText(r.id, ['مرحبا', 'abc']);
+    const s1 = await sc.buildScene(parsed, 0, { added: edits.addedFor(s0.part) }); const e = s1.byId.get(r.id);
+    const s2 = await sc.buildScene(parsed, 0); // built again without the records
+    const edits2 = es.createEditState(); const r2 = edits2.addTextBox(s0); edits2.commit(s1, r2.id, 0, 0);
+    const out = { sameXml: ser(s1.doc) === xml0 && ser(s2.doc) === xml0, ids: s1.elements.slice(0, ids0.length).every((x, i) => x.id === ids0[i]), plus1: s1.elements.length === ids0.length + 1, last: s1.elements[s1.elements.length - 1].id === r.id, added: !!e.added, detached: !s1.doc.contains(e.el) && !e.el.isConnected && !s1.doc.documentElement.contains(e.el), cnt: sc.countXmlElements(s1.doc) === cnt0, none: s2.elements.length === ids0.length && !s2.elements.some((x) => x.added), xfrm: e.xfrm && e.xfrm.w === r.box.w && e.xfrm.x === r.box.x,
+      id: r.id === `${s0.part}#${r.box.xmlId}` && r.box.xmlId > Math.max(...[...s0.doc.getElementsByTagNameNS('*', 'cNvPr')].map((c) => Number(c.getAttribute('id')))), listEmpty: edits.list().length === 0 && edits.size === 0, fresh: es.editStateOf(parsed).addedFor(s0.part).length === 0 };
+    edits.discard(r.id); out.discardKeeps = edits.isAdded(r.id) && edits.getAdded(r.id).paras.length === 2;
+    edits.commit(s1, r.id, 10, 5); out.hadMove = edits.has(r.id);
+    edits.removeAdded(r.id); out.removed = !edits.isAdded(r.id) && edits.addedFor(s0.part).length === 0;
+    out.noLeftover = out.hadMove && !edits.has(r.id) && edits.list().length === 0;
+    const e3 = es.createEditState(); const q = e3.addTextBox(s0); e3.clear(); out.cleared = !e3.isAdded(q.id);
+    out.refuse = [e3.setAddedText('nope', ['x']).ok, e3.setAddedText(q.id, 'x').ok];
+    return out;
+  });
+  ok(model.sameXml && model.cnt, 'the PPTX XML is untouched: the slide document serialises the same with the boxes in the scene and without, the file\'s own shape count is the same', model);
+  ok(model.ids && model.plus1 && model.last && model.added && model.detached && model.none && model.xfrm && model.id, 'the scene walks the box as one more shape after the file\'s own (same ids, same order), built from a detached element, with a fresh xml id; a scene built without the records has none', model);
+  ok(model.listEmpty && model.fresh && model.discardKeeps && model.removed && model.noLeftover && model.cleared && model.refuse[0] === false && model.refuse[1] === false, 'edit-state: a box is not a move / resize / text / style record; discard() keeps the box, removeAdded() deletes it with its move / resize / style records, clear() forgets it, bad ids and texts are refused; a new parse of the deck starts with none', model);
+
+  { // static: the model of a new box is pure and attaches nothing anywhere
+    const tb = readFileSync(path.join(ROOT, 'js/model/textbox.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, ''); const sc = readFileSync(path.join(ROOT, 'js/model/scene.js'), 'utf8').replace(/\/\/.*$/gm, ''); const es = readFileSync(path.join(ROOT, 'js/model/edit-state.js'), 'utf8').replace(/\/\/.*$/gm, '');
+    ok(!/\bimport\b|\bfetch\b|\bdocument\b|\bwindow\b|localStorage|indexedDB|XMLSerializer|\.appendChild\(|\.insertBefore\(/.test(tb) && /export function textBoxTree/.test(tb), 'textbox.js imports nothing, touches no page, storage or serializer, and attaches nothing to a document (it only builds a detached element)');
+    ok((sc.match(/textBoxTree\(/g) || []).length === 1 && !/\.(append|appendChild|insertBefore|replaceChild)\([^)]*added/.test(sc) && !/textBoxElement|textBoxTree/.test(es), 'scene.js is the only place that turns a record into an element (once, walked, never inserted into the document); the edit-state never builds an element');
+  }
+
+  // closing and reopening: the boxes go with the open deck; no listener is left; closing while editing keeps nothing
+  await ui.evaluate(() => {
+    const net = new Map(); globalThis.__net = net;
+    for (const T of [document, window]) { const nm = T === document ? 'doc' : 'win'; const add = T.addEventListener.bind(T); const rem = T.removeEventListener.bind(T); T.addEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) + 1); return add(a, f, o); }; T.removeEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) - 1); return rem(a, f, o); }; }
+  });
+  await ui.click('.modal [aria-label="Close"]'); await ui.waitForTimeout(300);
+  const netNow = () => ui.evaluate(() => [...globalThis.__net].filter(([, v]) => v !== 0).map(([k, v]) => `${k}=${v}`).join());
+  const net0 = await netNow();
+  const reopen = async () => { await ui.click('.tpl:has-text("Text box deck") >> text=Preview'); await ui.waitForSelector('.film-item'); await ui.click('role=tab[name="Rendered"]'); await ui.waitForSelector('.rendered-host .sf-slide .sf-el'); await idle(); };
+  await reopen(); const re = await boxes(); const reCount = await count();
+  ok(re.length === 0 && reCount === n0, 'reopened: the deck is the file again, none of the boxes (they live while the deck is open)', { n: re.length, reCount, n0 });
+  await ui.click('.sf-add-tb'); await idle(); await ui.keyboard.type('x'); await ui.keyboard.press('Enter'); await ui.keyboard.type('y');
+  await ui.click('.modal [aria-label="Close"]'); await ui.waitForTimeout(400);
+  ok(await netNow() === net0, 'closing the dialog while a new box is being edited leaves no listener on document or window', { net0, now: await netNow() });
+  await reopen(); ok((await boxes()).length === 0 && (await state()).ta === 0, 'and the next opening has no box and no editor');
+  await ui.close();
+}
+
+// ======================================================================================================
+section('Phase 3.2.7-B: shapes (rectangle, rounded rectangle, ellipse, line, arrow): add -> select -> style -> move / resize -> navigate -> remove, in the real UI');
+{
+  const ui = await ctx.newPage(); watch(ui, 'shapes: '); await ui.setViewportSize({ width: 1280, height: 1000 });
+  await openRendered(ui, 'Shapes deck', SEL);
+  const idle = async () => { await ui.waitForTimeout(700); await ui.waitForFunction(() => !document.querySelector('.sf-frame .status') && document.querySelector('.rendered-host .sf-slide') && !document.querySelector('.sf-add-tb').disabled); };
+  const ctl = (k) => ui.locator(`.sf-style-bar [data-ctl="${k}"]`);
+  const film = (i) => ui.locator('.rendered .film-item').nth(i);
+  const outside = async () => { await ui.mouse.click(...(await at(ui, 850, 520))); await ui.waitForTimeout(300); };
+  const status = () => ui.evaluate(() => document.querySelector('.sf-sel-status').textContent);
+  const count = () => ui.evaluate(() => document.querySelectorAll('.rendered-host .sf-slide .sf-el').length);
+  const add = async (k) => { await ui.click(`.sf-add-sh[data-shape="${k}"]`); await idle(); };
+  const bars = () => ui.evaluate(() => Object.fromEntries(['text-color', 'size', 'font', 'bold', 'italic', 'fill', 'line', 'reset'].map((q) => { const e = document.querySelector(`.sf-style-bar [data-ctl="${q}"]`); return [q, { off: e.disabled, v: e.value || '' }]; })));
+  const sel = () => ui.evaluate(() => {
+    const root = document.querySelector('.rendered-host .sf-slide'); const R = root.getBoundingClientRect(); const k = 960 / R.width; const o = root.querySelector('.sf-sel'); if (!o) return null;
+    const n = [...root.querySelectorAll('.sf-el')].find((x) => x.dataset.id === o.dataset.for); const r = n.getBoundingClientRect(); const ob = o.getBoundingClientRect(); const p = [...n.querySelectorAll('svg path')].find((q) => !q.closest('defs'));
+    return { id: n.dataset.id, name: n.dataset.name, kind: n.dataset.kind, support: n.dataset.support || null, box: [Math.round((r.left - R.left) * k), Math.round((r.top - R.top) * k), Math.round(r.width * k), Math.round(r.height * k)], cx: ob.left + ob.width / 2, cy: ob.top + ob.height / 2, ovl: Math.round(Math.max(Math.abs(ob.left - r.left), Math.abs(ob.top - r.top), Math.abs(ob.right - r.right), Math.abs(ob.bottom - r.bottom))), fill: p && p.getAttribute('fill'), stroke: p && p.getAttribute('stroke'), sw: p && p.getAttribute('stroke-width'), marker: !!(p && p.getAttribute('marker-end')), d: p && p.getAttribute('d'), texts: n.querySelectorAll('.sf-text').length };
+  });
+  const state = () => ui.evaluate(() => ({ slides: document.querySelectorAll('.rendered-host .sf-slide').length, sel: document.querySelectorAll('.rendered-host .sf-sel').length, ta: document.querySelectorAll('.sf-text-free').length, ce: document.querySelectorAll('[contenteditable]').length, rm: !document.querySelector('.sf-add-rm').disabled, note: document.querySelector('.rendered .stage-wrap > p.muted.fine:not(.sf-sel-status)').textContent, cur: [...document.querySelectorAll('.rendered .film-item')].findIndex((b) => b.getAttribute('aria-current') === 'true') }));
+  const store = () => ui.evaluate(async () => ({ ls: JSON.stringify({ ...localStorage }), dbs: ((await indexedDB.databases?.()) || []).map((d) => d.name).sort().join() }));
+  const store0 = await store(); const n0 = await count();
+
+  // the action
+  const btns = await ui.evaluate(() => [...document.querySelectorAll('.sf-add .btn')].map((b) => `${b.dataset.act}:${b.dataset.shape || ''}:${b.textContent}:${b.disabled}`));
+  ok(btns.join('|') === 'add-textbox:textbox:Add text box:false|add-shape:rect:Rectangle:false|add-shape:roundRect:Rounded rectangle:false|add-shape:ellipse:Ellipse:false|add-shape:line:Line:false|add-shape:arrow:Arrow:false|remove-added::Remove:true', 'the Rendered tab has Add text box, Rectangle, Rounded rectangle, Ellipse, Line and Arrow buttons (all enabled once the slide is drawn) and a Remove button (disabled: nothing of the preview\'s own is selected)', btns);
+
+  // each shape: one more element, selected, no editor, the right kind, frame and look
+  const made = {}; let prev = null;
+  for (const k of ['rect', 'roundRect', 'ellipse', 'line', 'arrow']) {
+    const before = await count(); await add(k); const s = await sel(); const st = await state(); made[k] = s;
+    const closed = k !== 'line' && k !== 'arrow';
+    ok(s && (await count()) === before + 1 && s.kind === (closed ? 'shape' : 'line') && s.support === 'native' && s.box[2] === (closed ? 240 : 288) && s.box[3] === (closed ? 108 : 0) && s.ovl <= (closed ? 1 : 4) && st.sel === 1 && st.ta === 0 && st.ce === 0 && st.rm, `${k}: one more native element of the right size (${closed ? '240 × 108' : '288 × 0, flat'} pt), selected with the outline on it, no editor, Remove enabled`, { s, st });
+    ok(/^Selected: (Shape|Line) “/.test(await status()) && !/to edit|cannot be edited|Only text/.test(await status()), `${k}: the status line just says what is selected (no editor was tried for a shape)`, await status());
+    ok(prev === null || (s.box[0] > prev.box[0] && s.box[1] > prev.box[1]) || k === 'line', `${k}: it sits a little lower and to the right of the one before, so none hides another`, { prev: prev && prev.box, now: s.box });
+    prev = s;
+  }
+  ok(made.rect.box[0] === 360 && made.rect.box[1] === 216 && /^Rectangle \d+$/.test(made.rect.name) && /^Rounded Rectangle \d+$/.test(made.roundRect.name) && /^Oval \d+$/.test(made.ellipse.name) && /^Straight Connector \d+$/.test(made.line.name) && /^Straight Arrow Connector \d+$/.test(made.arrow.name), 'the first rectangle is centred (360, 216 pt on a 960 × 540 slide); names are PowerPoint\'s: Rectangle, Rounded Rectangle, Oval, Straight Connector, Straight Arrow Connector', Object.fromEntries(Object.entries(made).map(([k, v]) => [k, v.name + '@' + v.box])));
+  ok(/^Selected: Line “Straight Arrow Connector/.test(await status()) && /5 new elements included/.test((await state()).note), 'the status line names the selected element; the count line says five new elements are included', { s: await status(), note: (await state()).note });
+  ok(made.rect.fill === '#4F81BD' && made.rect.stroke === '#385D8A' && made.rect.sw === '1' && made.roundRect.fill === '#4F81BD' && made.ellipse.fill === '#4F81BD', 'a closed shape is filled with the deck\'s accent 1 and outlined in a darker shade of it, 1 pt (theme colours: the fixture\'s accent 1 is #4F81BD)', { rect: [made.rect.fill, made.rect.stroke, made.rect.sw] });
+  ok(made.line.fill === 'none' && made.line.stroke === '#000000' && made.line.sw === '2.25' && !made.line.marker && made.arrow.stroke === '#000000' && made.arrow.sw === '2.25' && made.arrow.marker, 'a line and an arrow are 2.25 pt in the deck\'s text colour, flat, and only the arrow has an end marker (a triangle)', { line: made.line, arrow: made.arrow });
+  ok(/A18 18/.test(made.roundRect.d) && /A120 54/.test(made.ellipse.d) && /^M0 0H240V108H0Z$/.test(made.rect.d), 'the geometry is the preset\'s: a rectangle is a plain box, a rounded rectangle has the default 1/6 radius (18 pt), an ellipse fills its frame', { rr: made.roundRect.d.slice(0, 40), el: made.ellipse.d.slice(0, 30) });
+
+  // style bar: closed shapes take fill and outline, lines take an outline only; text controls are off; Reset only after a change
+  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Rectangle/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + 8, r.top + 8]; }))); await ui.waitForTimeout(300);
+  let s = await sel(); let b = await bars();
+  ok(s && s.name === made.rect.name && !b.fill.off && !b.line.off && b['text-color'].off && b.size.off && b.font.off && b.bold.off && b.italic.off && b.reset.off && b.fill.v === '#4f81bd' && b.line.v === '#385d8a', 'a click on the rectangle selects it again: the bar shows fill #4f81bd and outline #385d8a, the text controls and Reset are off', { s: s && s.name, b });
+  await ctl('fill').fill('#00ff00'); await ctl('line').fill('#ff0000'); await ui.waitForTimeout(400); s = await sel(); b = await bars();
+  ok(s.fill === '#00FF00' && s.stroke === '#FF0000' && !b.reset.off, 'fill and outline colours from the bar are drawn on a new shape, and Reset style becomes available', s);
+  await ctl('reset').click(); await ui.waitForTimeout(400); s = await sel(); b = await bars();
+  ok(s.fill === '#4F81BD' && s.stroke === '#385D8A' && b.reset.off, 'Reset style: the default look is back', s);
+  await ctl('fill').fill('#ffff00'); await ui.waitForTimeout(300);
+  // the arrow: outline only
+  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Straight Arrow/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }))); await ui.waitForTimeout(300);
+  s = await sel(); b = await bars();
+  ok(s && /^Straight Arrow/.test(s.name) && b.fill.off && !b.line.off && b.line.v === '#000000', 'a click on the arrow\'s line selects it: the bar offers the outline (colour #000000) and no fill');
+  await ctl('line').fill('#0000ff'); await ui.waitForTimeout(400); s = await sel();
+  ok(s.stroke === '#0000FF' && s.marker && s.sw === '2.25', 'the arrow\'s colour changes and its head stays', s);
+
+  // move and resize, ordinary records over the element's id
+  const dragBy = async (x, y, dx, dy) => { await ui.mouse.move(x, y); await ui.mouse.down(); await ui.mouse.move(x + dx, y + dy, { steps: 6 }); await ui.mouse.up(); await ui.waitForTimeout(400); };
+  const a0 = await sel(); await dragBy(a0.cx, a0.cy, 40, 50); const a1 = await sel();
+  ok(a1.box[0] > a0.box[0] && a1.box[1] > a0.box[1] && a1.box[3] === 0 && /Moved in the preview/.test(await status()) && a1.ovl <= 4, 'the flat arrow can be dragged (it stays flat) and the status line says so', { a0: a0.box, a1: a1.box });
+  const corner = async (h) => ui.evaluate((h) => { const e = document.querySelector(`.rendered-host .sf-sel .sf-hdl[data-h="${h}"]`).getBoundingClientRect(); return { x: e.left + e.width / 2, y: e.top + e.height / 2 }; }, h);
+  const hE = await corner('ne'); await dragBy(hE.x, hE.y, 50, 30); const a2 = await sel();
+  ok(a2.box[2] > a1.box[2] && a2.box[3] === 0 && a2.marker && a2.ovl <= 4, 'the arrow can be made longer with a corner handle: its height stays 0 and the head stays', { a1: a1.box, a2: a2.box });
+  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Oval/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }))); await ui.waitForTimeout(300);
+  const o0 = await sel(); const hS = await corner('se'); await dragBy(hS.x, hS.y, 40, 30); const o1 = await sel();
+  ok(/^Oval/.test(o0.name) && o1.box[2] > o0.box[2] && o1.box[3] > o0.box[3] && /Resized in the preview/.test(await status()) && o1.ovl <= 1, 'the oval can be resized with its handles', { o0: o0.box, o1: o1.box });
+
+  // navigation: shapes belong to their slide and keep style, place and size
+  const keep = await ui.evaluate(() => [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].filter((x) => /^(Rectangle|Rounded|Oval|Straight)/.test(x.dataset.name)).map((x) => x.dataset.name));
+  await film(1).click(); await idle(); const s2n = await count();
+  ok(!(await ui.evaluate(() => [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].some((x) => /^(Rectangle|Rounded|Oval|Straight)/.test(x.dataset.name)))), 'the other slide has none of slide 1\'s shapes');
+  await add('ellipse'); const t2 = await sel(); ok((await count()) === s2n + 1 && /slide2\.xml#\d+$/.test(t2.id), 'a shape made on slide 2 belongs to slide 2 (its id carries slide2.xml)', t2);
+  await film(0).click(); await idle(); await ui.click('role=tab[name="Slides"]'); await ui.waitForTimeout(300); await ui.click('role=tab[name="Rendered"]'); await idle();
+  const back = await ui.evaluate(() => Object.fromEntries([...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].filter((x) => /^(Rectangle|Rounded|Oval|Straight)/.test(x.dataset.name)).map((x) => { const p = [...x.querySelectorAll('svg path')].find((q) => !q.closest('defs')); const R = document.querySelector('.rendered-host .sf-slide').getBoundingClientRect(); const r = x.getBoundingClientRect(); return [x.dataset.name, { fill: p.getAttribute('fill'), stroke: p.getAttribute('stroke'), w: Math.round(r.width * 960 / R.width) }]; })));
+  const rectName = Object.keys(back).find((n) => /^Rectangle/.test(n)); const arrName = Object.keys(back).find((n) => /^Straight Arrow/.test(n)); const ovName = Object.keys(back).find((n) => /^Oval/.test(n));
+  ok(Object.keys(back).sort().join() === keep.slice().sort().join() && back[rectName].fill === '#FFFF00' && back[arrName].stroke === '#0000FF' && back[ovName].w === o1.box[2], 'back on slide 1 (and after the Slides tab): the same five shapes, with the yellow fill, the blue arrow and the resized oval', back);
+
+  // Remove: only what the preview added
+  await ui.mouse.click(...(await at(ui, 100, 320))); await ui.waitForTimeout(300); const fileSel = await sel();
+  ok(fileSel && !/^(Rectangle|Rounded|Oval|Straight|TextBox)/.test(fileSel.name) && (await ui.evaluate(() => document.querySelector('.sf-add-rm').disabled)), 'with one of the file\'s own elements selected, Remove is disabled: the file\'s elements are never removed', fileSel && fileSel.name);
+  const nBefore = await count(); await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^Rectangle/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + 8, r.top + 8]; }))); await ui.waitForTimeout(300);
+  await ui.click('.sf-add-rm'); await idle(); const st3 = await state();
+  ok((await count()) === nBefore - 1 && st3.sel === 0 && !st3.rm && /Removed “Rectangle \d+”\./.test(await status()), 'Remove deletes the selected rectangle: one element less, nothing selected, Remove off, the status line says what was removed', { n: await count(), s: await status() });
+  await add('rect'); const again = await sel(); ok(again && /^Rectangle \d+$/.test(again.name) && again.fill === '#4F81BD', 'a shape made after one was removed is a fresh one with the default look (nothing of the removed one is left)', again);
+
+  await ui.mouse.dblclick(again.cx, again.cy); await ui.waitForTimeout(300); const stD = await state();
+  ok(stD.ta === 0 && stD.ce === 0 && /no drawn text to edit/.test(await status()), 'a double click on a new shape opens no editor: it has no text (shapes carry no text yet)', await status());
+  // a text box and a shape together; the text box is removed with Remove too
+  await ui.click('.sf-add-tb'); await idle(); await ui.keyboard.type('label'); await add('rect');
+  const tb = await ui.evaluate(() => [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].filter((x) => /^TextBox/.test(x.dataset.name)).map((x) => x.textContent.replace(/\u200b/g, '')));
+  ok(tb.length === 1 && tb[0] === 'label' && /^Rectangle/.test((await sel()).name), 'adding a shape while a text box is being edited keeps the typed text and selects the new shape', tb);
+  await ui.mouse.click(...(await ui.evaluate(() => { const n = [...document.querySelectorAll('.rendered-host .sf-slide .sf-el')].find((x) => /^TextBox/.test(x.dataset.name)); const r = n.getBoundingClientRect(); return [r.left + 6, r.bottom - 6]; }))); await ui.waitForTimeout(300);
+  const nT = await count(); await ui.click('.sf-add-rm'); await idle(); ok((await count()) === nT - 1 && /Removed “TextBox/.test(await status()), 'Remove deletes a text box as well', await status());
+
+  // the file: the slide XML is untouched, the scene walks the shapes as plain sp / cxnSp, the edit-state keeps them apart from edits
+  const model = await ui.evaluate(async () => {
+    const parser = await import('/js/pptx/parser.js'); const sc = await import('/js/model/scene.js'); const es = await import('/js/model/edit-state.js');
+    const buf = new Uint8Array(await (await fetch('/tests/fixtures/p321-selection.pptx')).arrayBuffer());
+    const parsed = await parser.parsePptx(buf); const ser = (d) => new XMLSerializer().serializeToString(d);
+    const s0 = await sc.buildScene(parsed, 0); const xml0 = ser(s0.doc); const n0 = s0.elements.length;
+    const edits = es.createEditState(); const ids = {}; for (const k of ['rect', 'roundRect', 'ellipse', 'line', 'arrow', 'textbox']) ids[k] = edits.addElement(s0, k);
+    const s1 = await sc.buildScene(parsed, 0, { added: edits.addedFor(s0.part) });
+    const el = (k) => s1.byId.get(ids[k].id); const kinds = Object.fromEntries(Object.keys(ids).map((k) => [k, el(k).added]));
+    const out = { sameXml: ser(s1.doc) === xml0, plus: s1.elements.length === n0 + 6, kinds: JSON.stringify(kinds) === JSON.stringify({ rect: 'rect', roundRect: 'roundRect', ellipse: 'ellipse', line: 'line', arrow: 'arrow', textbox: 'textbox' }),
+      tags: [el('rect').tag, el('roundRect').tag, el('ellipse').tag, el('line').tag, el('arrow').tag].join(), geoms: [el('rect').geom, el('roundRect').geom, el('ellipse').geom, el('line').geom, el('arrow').geom].join(), flat: el('line').xfrm.h === 0 && el('arrow').xfrm.h === 0 && el('line').xfrm.w > 0, detached: Object.keys(ids).every((k) => !s1.doc.contains(el(k).el)),
+      idsUnique: new Set(s1.elements.map((e) => e.id)).size === s1.elements.length, textOnly: edits.isAddedText(ids.textbox.id) && !edits.isAddedText(ids.rect.id) && !edits.isAddedText(ids.arrow.id), refuse: [edits.setAddedText(ids.rect.id, ['x']).ok, edits.addElement(s0, 'star').ok, edits.addElement(s0, undefined).ok === true], looks: edits.addedLook(s1, ids.rect.id) === null,
+      listEmpty: edits.list().length === 0 && edits.size === 0 };
+    edits.commit(s1, ids.arrow.id, 10, 5); out.hadMove = edits.has(ids.arrow.id); edits.removeAdded(ids.arrow.id); out.noLeftover = out.hadMove && !edits.has(ids.arrow.id) && !edits.isAdded(ids.arrow.id);
+    const left = edits.addedFor(s0.part).length; edits.clear(); out.cleared = left === 6 + 0 && edits.addedFor(s0.part).length === 0;
+    out.fresh = es.editStateOf(parsed).addedFor(s0.part).length === 0;
+    return out;
+  });
+  ok(model.sameXml && model.plus && model.detached && model.idsUnique, 'the PPTX XML is untouched with five shapes and a text box in the scene; they are six more elements with unique ids, built from detached elements', model);
+  ok(model.kinds && model.tags === 'sp,sp,sp,cxnSp,cxnSp' && model.geoms === 'rect,roundRect,ellipse,line,straightConnector1' && model.flat, 'the scene walks them as ordinary elements: sp with rect / roundRect / ellipse, cxnSp with line / straightConnector1, the lines flat; `added` carries the kind', model);
+  ok(model.textOnly && model.refuse[0] === false && model.refuse[1] === false && model.refuse[2] === true && model.looks && model.listEmpty && model.noLeftover && model.cleared && model.fresh, 'edit-state: only a text box has text of its own (a shape refuses setAddedText), an unknown kind is refused, a box is not an edit record, removeAdded() takes the element\'s move / resize / style records with it, clear() forgets all, a new parse starts with none', model);
+  const st1 = await store(); ok(st1.ls === store0.ls && st1.dbs === store0.dbs, 'adding, styling, moving, resizing and removing shapes wrote nothing to localStorage or IndexedDB');
+
+  // closing: nothing is kept, no listener is left
+  await ui.evaluate(() => {
+    const net = new Map(); globalThis.__net = net;
+    for (const T of [document, window]) { const nm = T === document ? 'doc' : 'win'; const add = T.addEventListener.bind(T); const rem = T.removeEventListener.bind(T); T.addEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) + 1); return add(a, f, o); }; T.removeEventListener = (a, f, o) => { net.set(`${nm}:${a}`, (net.get(`${nm}:${a}`) || 0) - 1); return rem(a, f, o); }; }
+  });
+  await ui.click('.modal [aria-label="Close"]'); await ui.waitForTimeout(300);
+  const netNow = () => ui.evaluate(() => [...globalThis.__net].filter(([, v]) => v !== 0).map(([k, v]) => `${k}=${v}`).join());
+  const net0 = await netNow();
+  const reopen = async () => { await ui.click('.tpl:has-text("Shapes deck") >> text=Preview'); await ui.waitForSelector('.film-item'); await ui.click('role=tab[name="Rendered"]'); await ui.waitForSelector('.rendered-host .sf-slide .sf-el'); await idle(); };
+  await reopen(); ok((await count()) === n0 && (await state()).rm === false, 'reopened: the deck is the file again, none of the shapes');
+  await add('arrow'); await add('ellipse'); const sd = await sel(); await ui.mouse.move(sd.cx, sd.cy); await ui.mouse.down(); await ui.mouse.move(sd.cx + 30, sd.cy + 20, { steps: 4 });
+  await ui.click('.modal [aria-label="Close"]', { force: true }).catch(() => {}); await ui.mouse.up().catch(() => {}); await ui.waitForTimeout(400);
+  ok(await netNow() === net0, 'closing the dialog (even in the middle of a drag) leaves no listener on document or window', { net0, now: await netNow() });
+  await reopen(); ok((await count()) === n0, 'and the next opening has none of the shapes');
   await ui.close();
 }
 

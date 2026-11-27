@@ -52,6 +52,7 @@
 // A parent whose scale is zero (a collapsed group) has no inverse: such a move is refused ('singular') and the element stays where the file has it.
 import { localMatrix, mul } from './scene.js';
 import { MIN_PT, FLAT_PT, MAX_TIMES, SAME_PT } from './resize-limits.js';
+import { paraRtl, isBlankText, defaultFrame, shapeFrame, ADDED_KINDS, KIND_LABEL } from './textbox.js';
 
 const E = 12700;
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -81,6 +82,7 @@ export function toLocalDelta(e, dxPt, dyPt) {
 const copy = (r) => ({ ...r, slideDelta: { ...r.slideDelta }, localDelta: { ...r.localDelta }, origin: { ...r.origin }, position: { ...r.position } });
 const copyRz = (r) => ({ ...r, slideFrame: { ...r.slideFrame }, scale: { ...r.scale }, origin: { ...r.origin }, extent: { ...r.extent }, localShift: { ...r.localShift }, position: { ...r.position } });
 const EPS = 1e-6; // points: float noise of a size that went through the pointer and back
+const copyAdded = (r) => ({ ...r, ...(r.paras ? { paras: r.paras.map((p) => ({ ...p })) } : {}) });
 const copyTx = (r) => ({ ...r, paras: r.paras.map((p) => ({ ...p, runs: p.runs.map((x) => ({ ...x })), ...(p.fill ? { fill: { ...p.fill } } : {}) })) });
 /** The text of an element with a text record applied: new paragraph / run objects, `e.text` itself is never written. Without a record it IS `e.text`. */
 function textWithRecord(e, rec) {
@@ -204,6 +206,7 @@ export function createEditState() {
   const resizes = new Map(); // element id -> resize record (Phase 3.2.4-B)
   const texts = new Map(); // element id -> text record (Phase 3.2.5-B)
   const styles = new Map(); // element id -> style record (Phase 3.2.6-A)
+  const added = new Map(); // element id -> record of a new text box (Phase 3.2.7-A) or shape (3.2.7-B): { id, part, xmlId, kind, name, x, y, w, h (EMU), paras: [{ text, rtl }] (text boxes only) }; the element's own content, see js/model/textbox.js
   let version = 0; // counts every change of the content, so "nothing was written" is checkable
 
   return {
@@ -391,10 +394,49 @@ export function createEditState() {
     forSlide(part) { return [...moves.values()].filter((r) => r.part === part).map(copy); },
     /** Copies of every record, in the order the elements were first moved. */
     list() { return [...moves.values()].map(copy); },
+    // NEW TEXT BOXES (Phase 3.2.7-A). A record here is a text box that does not exist in the file: its frame and its text ARE the record (textBoxElement() turns it into the shape the scene walks), so the
+    // box's own text edits replace `paras` and never make a text record; its moves, resizes and styles are ordinary records over its id. discard(id) and reset() leave the box itself (and its text) where it is.
+    /** Make a new element on the slide of `scene`: an empty text box ('textbox') or a shape ('rect', 'roundRect', 'ellipse', 'line', 'arrow', Phase 3.2.7-B): { ok: true, id, box } with the record's copy. The xml id is above every id of the slide and of the elements already made on it. */
+    addElement(scene, kind = 'textbox') {
+      if (!ADDED_KINDS.includes(kind)) return { ok: false, reason: 'bad-kind' };
+      if (!scene || !scene.byId || !scene.part || !(scene.width > 0) || !(scene.height > 0)) return { ok: false, reason: 'no-slide' };
+      const used = [...scene.byId.keys()].map((k) => Number(String(k).split('#').pop())).filter(Number.isFinite); // (every element the scene walked, those made earlier included)
+      const mine = [...added.values()].filter((r) => r.part === scene.part);
+      const xmlId = Math.max(1, ...used, ...mine.map((r) => Number(r.xmlId))) + 1;
+      const f = kind === 'textbox' ? defaultFrame(scene.width, scene.height, mine.length) : shapeFrame(kind, scene.width, scene.height, mine.length);
+      const rec = { id: `${scene.part}#${xmlId}`, part: scene.part, xmlId, kind, name: `${KIND_LABEL[kind]} ${xmlId - 1}`, ...f, ...(kind === 'textbox' ? { paras: [{ text: '', rtl: false }] } : {}) };
+      added.set(rec.id, rec); version++;
+      return { ok: true, id: rec.id, box: copyAdded(rec) };
+    },
+    addTextBox(scene) { return this.addElement(scene, 'textbox'); },
+    /** A text box made in the preview (not a shape): the ones with text of their own. */
+    /** What typing into an EMPTY new text box looks like: the default run of its first paragraph with the style record applied ({ hex, font, rtl, sz, b, i }), or null. */
+    addedLook(scene, id) {
+      const e = scene && scene.byId ? scene.byId.get(id) : null; if (!e || !this.isAddedText(id) || !e.text) return null;
+      const dr = effectiveText(e, null, styles.get(id))?.paras?.[0]?.defRun; if (!dr) return null;
+      return { hex: dr.hex || '', font: dr.font, rtl: !!dr.rtl, sz: dr.sz || 0, b: !!dr.b, i: !!dr.i };
+    },
+    isAddedText(id) { const r = added.get(id); return !!r && r.kind === 'textbox'; },
+    isAdded(id) { return added.has(id); },
+    getAdded(id) { const r = added.get(id); return r ? copyAdded(r) : null; },
+    /** The boxes made on one slide (by part), oldest first. */
+    addedFor(part) { return [...added.values()].filter((r) => r.part === part).map(copyAdded); },
+    listAdded() { return [...added.values()].map(copyAdded); },
+    /** Replace the text of a box: `texts` = one string per paragraph, exactly as typed (a paragraph's direction follows its first strong letter). Returns { ok, changed, empty } (`empty`: nothing but white space is left). */
+    setAddedText(id, texts) {
+      const r = added.get(id); if (!r) return { ok: false, reason: 'unknown-box' }; if (r.kind !== 'textbox') return { ok: false, reason: 'not-a-text-box' };
+      if (!Array.isArray(texts) || !texts.every((t) => typeof t === 'string')) return { ok: false, reason: 'bad-text' };
+      const list = texts.length ? texts : ['']; const paras = list.map((text) => ({ text, rtl: paraRtl(text) }));
+      const changed = JSON.stringify(paras) !== JSON.stringify(r.paras);
+      if (changed) { r.paras = paras; version++; }
+      return { ok: true, changed, empty: isBlankText(list) };
+    },
+    /** Delete a box with everything kept for it (its move, resize and style too). */
+    removeAdded(id) { if (!added.delete(id)) return false; moves.delete(id); resizes.delete(id); texts.delete(id); styles.delete(id); version++; return true; },
     /** Forget every edit of one element, its move, its resize, its text and its style (it is back at its file frame, text and style). */
     discard(id) { const a = moves.delete(id); const b = resizes.delete(id); const c = texts.delete(id); const d = styles.delete(id); if (a || b || c || d) version++; },
-    /** Forget every move, every resize, every text edit and every style edit. */
-    clear() { if (moves.size || resizes.size || texts.size || styles.size) version++; moves.clear(); resizes.clear(); texts.clear(); styles.clear(); },
+    /** Forget every move, every resize, every text edit and every style edit, and every new text box (the deck is closing). */
+    clear() { if (moves.size || resizes.size || texts.size || styles.size || added.size) version++; moves.clear(); resizes.clear(); texts.clear(); styles.clear(); added.clear(); },
     /** The number of elements that hold a committed move, a committed resize, a committed text edit or a committed style edit. */
     get size() { return new Set([...moves.keys(), ...resizes.keys(), ...texts.keys(), ...styles.keys()]).size; },
     get version() { return version; },

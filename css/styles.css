@@ -157,7 +157,7 @@ progress { width: 100%; height: 6px; accent-color: var(--ink); }
 /* sign in */
 .signin { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--canvas); }
 .signin-card { width: min(400px, 100%); display: grid; gap: 14px; padding: 32px; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r-pop); }
-.signin-card .brand { padding: 0; margin-bottom: 8px; }
+.signin-card .brand { padding: 0; margin: 8px 0; }
 .signin-card h1 { font-size: 24px; }
 
 /* toasts */
@@ -239,3 +239,12 @@ progress { width: 100%; height: 6px; accent-color: var(--ink); }
 .sf-sb-status { min-height: 3em; font-size: 13px; line-height: 1.5; color: var(--ink-3); } /* two lines are always reserved: a message appearing must not move the slide (the dialog is centred) */
 @media (pointer: coarse) { .sf-sb-color, .sf-sb-num, .sf-sb-font, .sf-sb-tgl { height: 40px; } .sf-sb-tgl { width: 40px; } }
 @media (max-width: 860px) { .sf-sb-reset { margin-left: 0; } .sf-sb-font { width: 130px; } }
+
+/* Phase 3.2.7-A: the "Add text box" row of the Rendered tab and the editor of a new text box. Static rules only: the CSP forbids inline styles. */
+.sf-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0; }
+.sf-add .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+.sf-add-hint { font-size: 13px; }
+/* Phase 3.2.7-B: the shape buttons share the row of "Add text box"; Remove is only for elements the preview added. */
+.sf-add .btn { min-height: 34px; padding: 0 10px; font-size: 13px; }
+.sf-add { gap: 6px 8px; }
+.sf-add-sub { margin-top: 0; }

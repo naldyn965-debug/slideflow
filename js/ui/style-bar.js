@@ -64,7 +64,7 @@ export function styleBar({ edits }) {
     if (!ok) return null;
     const st = edits.effectiveStyle(e) || {};
     const t = e.kind === 'shape' && e.text && e.text.paras ? edits.effectiveStyledText(e) : null;
-    const drawn = !!(t && t.paras.some((p) => p.runs.length)); // (the renderer draws a text box only for a paragraph that has runs)
+    const drawn = !!(t && (t.paras.some((p) => p.runs.length) || e.added === 'textbox')); // (the renderer draws a text box only for a paragraph that has runs)
     const rs = drawn ? targets(t) : []; const fs = t && t.body && t.body.fontScale > 0 ? t.body.fontScale : 1;
     return {
       text: drawn, textColor: drawn && rs.some((r) => !r.link),

@@ -262,7 +262,7 @@ async function renderElement(ctx, e) {
   if (e.tag === 'grpSp') { box.classList.add('sf-group'); return box; }
   if (rendersAsShape(e)) {
     const g = await renderShape(ctx, e, box);
-    if (e.text && e.text.paras.length && (e.text.paras.some((p) => p.runs.length) || false)) {
+    if (e.text && e.text.paras.length && (e.text.paras.some((p) => p.runs.length) || e.added === 'textbox')) { // (a new text box is drawn while it is empty too: it is the place its text is typed into, Phase 3.2.7-A)
       const tb = textBox(e.text, ctx.k);
       const r = g.textRect; if (r) { const t = tb.style; t.left = L(r[0]); t.top = L(r[1]); t.width = L(r[2] - r[0]); t.height = L(r[3] - r[1]); }
       box.append(tb);
